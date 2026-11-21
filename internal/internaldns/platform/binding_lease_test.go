@@ -140,3 +140,54 @@ func TestServingRenewalRenewsTheMemberLeaseNotTheBinding(t *testing.T) {
 		t.Fatalf("a row near lapsing was not renewed: %#v", got.Status.MemberAcknowledgements)
 	}
 }
+
+func TestServingChangeIsRecordedAtOnce(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		setup  func(*bindingFixture)
+		change func(*bindingFixture)
+		want   func(dnsv1alpha1.DNSApplyAcknowledgement) bool
+	}{
+		{
+			name:   "phase",
+			change: func(f *bindingFixture) { f.ack(model.AckRejected, "bad zone") },
+			want: func(r dnsv1alpha1.DNSApplyAcknowledgement) bool {
+				return r.Phase == string(model.AckRejected)
+			},
+		},
+		{
+			name:   "error",
+			setup:  func(f *bindingFixture) { f.ack(model.AckRejected, "bad zone") },
+			change: func(f *bindingFixture) { f.ack(model.AckRejected, "bad address") },
+			want: func(r dnsv1alpha1.DNSApplyAcknowledgement) bool {
+				return r.Error == "bad address"
+			},
+		},
+		{
+			name: "snapshot fence",
+			change: func(f *bindingFixture) {
+				f.commit(8)
+				f.ack(model.AckVerified, "")
+			},
+			want: func(r dnsv1alpha1.DNSApplyAcknowledgement) bool {
+				return r.SnapshotRevision == 8 && r.Phase == string(model.AckVerified)
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newBindingFixture(t, model.Member{MemberID: "regional-0", ReplicaID: "regional-0", Role: "regional"})
+			f.ack(model.AckVerified, "")
+			if tc.setup != nil {
+				f.now = f.now.Add(time.Second)
+				tc.setup(f)
+			}
+			before := f.get()
+			f.now = f.now.Add(time.Second)
+			tc.change(f)
+			got := f.get()
+			if got.ResourceVersion == before.ResourceVersion || len(got.Status.MemberAcknowledgements) != 1 || !tc.want(got.Status.MemberAcknowledgements[0]) {
+				t.Fatalf("the change was not recorded at once: %#v", got.Status.MemberAcknowledgements)
+			}
+		})
+	}
+}

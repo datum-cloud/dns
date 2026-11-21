@@ -133,10 +133,10 @@ func TestServingRenewalRenewsTheMemberLeaseNotTheBinding(t *testing.T) {
 		t.Fatalf("node member lease = %q, want %q", got, want)
 	}
 
-	f.now = f.now.Add(publicationRowLease - publicationRowRenewBefore)
+	f.now = f.now.Add(memberRowLease - memberRowRenewBefore)
 	f.ack(model.AckVerified, "")
 	got := f.get()
-	if got.ResourceVersion == first.ResourceVersion || !got.Status.MemberAcknowledgements[0].ValidUntil.Time.Equal(f.now.Add(publicationRowLease)) {
+	if got.ResourceVersion == first.ResourceVersion || !got.Status.MemberAcknowledgements[0].ValidUntil.Time.Equal(f.now.Add(memberRowLease)) {
 		t.Fatalf("a row near lapsing was not renewed: %#v", got.Status.MemberAcknowledgements)
 	}
 }

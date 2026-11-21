@@ -19,14 +19,14 @@ import (
 )
 
 // A member's liveness is one lease per member, renewed by any verified
-// acknowledgement it sends. A manifest row only proves the member verified that
-// revision, so it is rewritten when it changes or nears publicationRowLease,
-// not on every renewal.
+// acknowledgement it sends. A manifest or binding row only proves the member
+// verified that revision, so it is rewritten when it changes or nears
+// memberRowLease, not on every renewal.
 const (
-	memberLeaseKey            = "validUntil"
-	memberLeaseRenewAfter     = 15 * time.Second
-	publicationRowLease       = 10 * time.Minute
-	publicationRowRenewBefore = 5 * time.Minute
+	memberLeaseKey        = "validUntil"
+	memberLeaseRenewAfter = 15 * time.Second
+	memberRowLease        = 10 * time.Minute
+	memberRowRenewBefore  = 5 * time.Minute
 )
 
 func memberLeaseName(region, shard, member string) string {
@@ -129,21 +129,26 @@ func cutGroup(group string) (string, string) {
 	return group[:i], group[i+1:]
 }
 
-// publicationRowChanged reports whether row says something the stored rows do
-// not: a new member, phase, fence or error, or a verification whose stored row
-// is close to lapsing.
-func publicationRowChanged(rows []dnsv1alpha1.DNSApplyAcknowledgement, row dnsv1alpha1.DNSApplyAcknowledgement, now time.Time) bool {
+// memberRowChanged reports whether row says something the stored rows do not:
+// a new member, phase, fence or error, or a verification whose stored row is
+// close to lapsing. A manifest row leaves the binding fences at zero.
+func memberRowChanged(rows []dnsv1alpha1.DNSApplyAcknowledgement, row dnsv1alpha1.DNSApplyAcknowledgement, now time.Time) bool {
 	for _, stored := range rows {
 		if stored.MemberID != row.MemberID {
 			continue
 		}
-		if stored.Phase != row.Phase || stored.Revision != row.Revision || stored.WriterEpoch != row.WriterEpoch || stored.Error != row.Error {
+		if stored.Phase != row.Phase || stored.Error != row.Error || !sameFence(stored, row) {
 			return true
 		}
 		if row.Phase != string(model.AckVerified) {
 			return false
 		}
-		return stored.ValidUntil == nil || stored.ValidUntil.Sub(now) < publicationRowRenewBefore
+		return stored.ValidUntil == nil || stored.ValidUntil.Sub(now) < memberRowRenewBefore
 	}
 	return true
+}
+
+func sameFence(a, b dnsv1alpha1.DNSApplyAcknowledgement) bool {
+	return a.Revision == b.Revision && a.WriterEpoch == b.WriterEpoch && a.SnapshotRevision == b.SnapshotRevision &&
+		a.AccessEpoch == b.AccessEpoch && a.AccessSequence == b.AccessSequence
 }

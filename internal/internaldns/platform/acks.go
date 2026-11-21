@@ -189,9 +189,9 @@ func (s *AckSink) publication(ctx context.Context, a model.MemberAck, row dnsv1a
 		}
 	}
 	base := m.DeepCopy()
-	if publicationRowChanged(m.Status.ReplicaAcknowledgements, row, now) {
+	if memberRowChanged(m.Status.ReplicaAcknowledgements, row, now) {
 		if a.Phase == model.AckVerified {
-			until := metav1.NewTime(a.ObservedAt.Add(publicationRowLease))
+			until := metav1.NewTime(a.ObservedAt.Add(memberRowLease))
 			row.ValidUntil = &until
 		}
 		m.Status.ReplicaAcknowledgements = upsertAck(m.Status.ReplicaAcknowledgements, row)
@@ -273,9 +273,9 @@ func (s *AckSink) recordServing(ctx context.Context, binding *dnsv1alpha1.DNSRes
 	row.SnapshotRevision = int64(a.Revision)
 	row.AccessEpoch = binding.Spec.Version.Epoch
 	row.AccessSequence = binding.Spec.Version.Sequence
-	if publicationRowChanged(binding.Status.MemberAcknowledgements, row, now) {
+	if memberRowChanged(binding.Status.MemberAcknowledgements, row, now) {
 		if a.Phase == model.AckVerified {
-			until := metav1.NewTime(a.ObservedAt.Add(publicationRowLease))
+			until := metav1.NewTime(a.ObservedAt.Add(memberRowLease))
 			row.ValidUntil = &until
 		}
 		binding.Status.MemberAcknowledgements = upsertAck(binding.Status.MemberAcknowledgements, row)

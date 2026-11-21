@@ -220,3 +220,24 @@ func TestLapsedMemberLeaseMakesItsBindingsStale(t *testing.T) {
 		})
 	}
 }
+
+func TestServingReadsTheNamedBindingNotTheNamespace(t *testing.T) {
+	f := newBindingFixture(t, model.Member{MemberID: "regional-0", ReplicaID: "regional-0", Role: "regional"})
+	counter := &listCounter{Client: f.client}
+	f.sink.Client = counter
+	f.ack(model.AckVerified, "")
+	counter.lists = 0
+
+	for range 3 {
+		f.now = f.now.Add(30 * time.Second)
+		f.ack(model.AckVerified, "")
+	}
+	f.now = f.now.Add(memberRowLease - memberRowRenewBefore)
+	f.ack(model.AckVerified, "")
+	if counter.lists != 0 {
+		t.Fatalf("acknowledgements of a known binding listed the namespace %d times", counter.lists)
+	}
+	if got := f.get(); !got.Status.MemberAcknowledgements[0].ValidUntil.Time.Equal(f.now.Add(memberRowLease)) {
+		t.Fatalf("the binding read by name was not written: %#v", got.Status.MemberAcknowledgements)
+	}
+}

@@ -241,3 +241,25 @@ func TestServingReadsTheNamedBindingNotTheNamespace(t *testing.T) {
 		t.Fatalf("the binding read by name was not written: %#v", got.Status.MemberAcknowledgements)
 	}
 }
+
+func TestServingFindsABindingTheIndexNamesWrongly(t *testing.T) {
+	f := newBindingFixture(t, model.Member{MemberID: "regional-0", ReplicaID: "regional-0", Role: "regional"})
+	f.ack(model.AckVerified, "")
+	ctx := context.Background()
+	moved := f.get()
+	if err := f.client.Delete(ctx, &moved); err != nil {
+		t.Fatal(err)
+	}
+	moved.ObjectMeta = metav1.ObjectMeta{Name: "binding-b", Namespace: "platform", UID: moved.UID, Labels: moved.Labels}
+	moved.Status = dnsv1alpha1.DNSResolverBindingStatus{}
+	if err := f.client.Create(ctx, &moved); err != nil {
+		t.Fatal(err)
+	}
+	f.binding = client.ObjectKeyFromObject(&moved)
+
+	f.now = f.now.Add(time.Second)
+	f.ack(model.AckVerified, "")
+	if got := f.get(); len(got.Status.MemberAcknowledgements) != 1 {
+		t.Fatalf("the acknowledgement did not reach the binding under its new name: %#v", got.Status)
+	}
+}

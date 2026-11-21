@@ -191,3 +191,32 @@ func TestServingChangeIsRecordedAtOnce(t *testing.T) {
 		})
 	}
 }
+
+func TestLapsedMemberLeaseMakesItsBindingsStale(t *testing.T) {
+	for _, member := range []model.Member{
+		{MemberID: "node-0", ReplicaID: "node-0", Role: "node"},
+		{MemberID: "regional-0", ReplicaID: "regional-0", Role: "regional"},
+	} {
+		t.Run(member.Role, func(t *testing.T) {
+			f := newBindingFixture(t, member)
+			f.ack(model.AckVerified, "")
+			f.now = f.now.Add(91 * time.Second)
+			if err := f.sink.Refresh(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			b := f.get()
+			if b.Status.Phase == dnsValueServing {
+				t.Fatal("a member that stopped renewing its lease still serves the binding")
+			}
+			if !b.Status.MemberAcknowledgements[0].ValidUntil.After(f.now) {
+				t.Fatal("the staleness must come from the member lease, not the row")
+			}
+
+			f.now = f.now.Add(time.Second)
+			f.ack(model.AckVerified, "")
+			if got := f.get(); got.Status.Phase != dnsValueServing {
+				t.Fatalf("a member renewing again did not restore serving: %#v", got.Status)
+			}
+		})
+	}
+}

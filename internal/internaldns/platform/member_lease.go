@@ -96,21 +96,54 @@ func (s *AckSink) loadMemberLeases(ctx context.Context, groups map[string]bool) 
 			if member.Role != dnsValueRegional && member.Role != dnsValueCluster {
 				continue
 			}
-			var cm corev1.ConfigMap
-			err := s.Client.Get(ctx, client.ObjectKey{Namespace: s.Namespace, Name: memberLeaseName(region, shard, member.MemberID)}, &cm)
-			if apierrors.IsNotFound(err) {
-				continue
-			}
+			until, ok, err := s.readMemberLease(ctx, region, shard, member.MemberID)
 			if err != nil {
 				failed = errors.Join(failed, fmt.Errorf("read member lease %s/%s: %w", group, member.MemberID, err))
-				continue
-			}
-			if until, err := time.Parse(time.RFC3339Nano, cm.Data[memberLeaseKey]); err == nil {
+			} else if ok {
 				leases[memberLeaseKeyFor(group, member.MemberID)] = until
 			}
 		}
 	}
 	return leases, failed
+}
+
+// loadServingLeases reads the leases of members of this sink's own group, of
+// any role. As for publications, a member whose lease is missing or unreadable
+// is left out, so its rows alone decide.
+func (s *AckSink) loadServingLeases(ctx context.Context, members []model.Member) (map[string]time.Time, error) {
+	group := s.Region + "/" + s.Shard
+	leases := map[string]time.Time{}
+	var failed error
+	for _, member := range members {
+		until, ok, err := s.readMemberLease(ctx, s.Region, s.Shard, member.MemberID)
+		if err != nil {
+			failed = errors.Join(failed, fmt.Errorf("read member lease %s/%s: %w", group, member.MemberID, err))
+		} else if ok {
+			leases[memberLeaseKeyFor(group, member.MemberID)] = until
+		}
+	}
+	return leases, failed
+}
+
+// readMemberLease reads one member's lease; ok is false when it has none.
+func (s *AckSink) readMemberLease(ctx context.Context, region, shard, member string) (until time.Time, ok bool, err error) {
+	var cm corev1.ConfigMap
+	err = s.Client.Get(ctx, client.ObjectKey{Namespace: s.Namespace, Name: memberLeaseName(region, shard, member)}, &cm)
+	if apierrors.IsNotFound(err) {
+		return time.Time{}, false, nil
+	}
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	until, err = time.Parse(time.RFC3339Nano, cm.Data[memberLeaseKey])
+	return until, err == nil, nil
+}
+
+// memberLive reports whether the member's lease in group is current. A member
+// with no lease read is live, so its rows alone decide.
+func (s *AckSink) memberLive(group, member string, now time.Time) bool {
+	until, ok := s.leases[memberLeaseKeyFor(group, member)]
+	return !ok || until.After(now)
 }
 
 func manifestGroups(m *dnsv1alpha1.DNSPublicationManifest) map[string]bool {

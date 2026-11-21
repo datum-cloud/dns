@@ -282,7 +282,11 @@ func (s *AckSink) recordServing(ctx context.Context, binding *dnsv1alpha1.DNSRes
 	} else if !renewed {
 		return nil
 	}
-	s.setBindingStatus(binding, e, snapshot, now)
+	leases, leaseErr := s.loadServingLeases(ctx, s.bindingMembers(binding.Status.MemberAcknowledgements, now))
+	if leaseErr != nil {
+		log.FromContext(ctx).Error(leaseErr, "member leases unreadable; their rows decide")
+	}
+	s.withLeases(leases).setBindingStatus(binding, e, snapshot, now)
 	if jsonEqualStatus(base.Status, binding.Status) {
 		return nil
 	}
@@ -524,10 +528,6 @@ func (s *AckSink) verified(rows []dnsv1alpha1.DNSApplyAcknowledgement, now time.
 		}
 		return false
 	}
-	live := func(group string, member model.Member) bool {
-		until, ok := s.leases[memberLeaseKeyFor(group, member.MemberID)]
-		return !ok || until.After(now)
-	}
 	if role == "publication" {
 		groups := s.publicationGroups()
 		for group, members := range groups {
@@ -536,7 +536,7 @@ func (s *AckSink) verified(rows []dnsv1alpha1.DNSApplyAcknowledgement, now time.
 			for _, member := range members {
 				if member.Role == dnsValueRegional || member.Role == dnsValueCluster {
 					required++
-					if matches(member) && live(group, member) {
+					if matches(member) && s.memberLive(group, member.MemberID, now) {
 						verified++
 					}
 				}
@@ -618,24 +618,7 @@ func (s *AckSink) Refresh(ctx context.Context) error {
 	// This shard's own failures skip only its bindings: one sink writes each
 	// manifest's status, so a failing shard must not leave publication it owns
 	// unrefreshed as acknowledgements expire.
-	var refreshErrors error
-	var bindings dnsv1alpha1.DNSResolverBindingList
-	envelope, snapshot, err := s.shardState(ctx, &bindings)
-	if err != nil {
-		refreshErrors = err
-		bindings.Items = nil
-	}
-	for i := range bindings.Items {
-		b := &bindings.Items[i]
-		base := b.DeepCopy()
-		b.Status.MemberAcknowledgements = s.withoutRetired(b.Status.MemberAcknowledgements, now)
-		s.setBindingStatus(b, envelope, snapshot, now)
-		if !jsonEqualStatus(base.Status, b.Status) {
-			if err := s.Client.Status().Patch(ctx, b, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
-				refreshErrors = errors.Join(refreshErrors, err)
-			}
-		}
-	}
+	refreshErrors := s.refreshBindings(ctx, now)
 	var owners dnsv1alpha1.DNSPublicationOwnershipList
 	if err := s.Client.List(ctx, &owners, client.InNamespace(s.Namespace)); err != nil {
 		return err
@@ -681,6 +664,31 @@ func (s *AckSink) Refresh(ctx context.Context) error {
 	}
 	for range projections {
 		refreshErrors = errors.Join(refreshErrors, <-results)
+	}
+	return refreshErrors
+}
+
+// refreshBindings derives the status of each of the shard's bindings again,
+// from its rows and its members' leases.
+func (s *AckSink) refreshBindings(ctx context.Context, now time.Time) error {
+	var bindings dnsv1alpha1.DNSResolverBindingList
+	envelope, snapshot, err := s.shardState(ctx, &bindings)
+	if err != nil {
+		return err
+	}
+	leases, refreshErrors := s.loadServingLeases(ctx, s.servingMembers(bindings.Items, now))
+	leased := s.withLeases(leases)
+	for i := range bindings.Items {
+		b := &bindings.Items[i]
+		base := b.DeepCopy()
+		b.Status.MemberAcknowledgements = s.withoutRetired(b.Status.MemberAcknowledgements, now)
+		leased.setBindingStatus(b, envelope, snapshot, now)
+		if jsonEqualStatus(base.Status, b.Status) {
+			continue
+		}
+		if err := s.Client.Status().Patch(ctx, b, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
+			refreshErrors = errors.Join(refreshErrors, err)
+		}
 	}
 	return refreshErrors
 }
@@ -808,12 +816,7 @@ func (s *AckSink) bindingProof(b *dnsv1alpha1.DNSResolverBinding, envelope *mode
 	if !present {
 		return false
 	}
-	rows := make([]dnsv1alpha1.DNSApplyAcknowledgement, 0, len(b.Status.MemberAcknowledgements))
-	for _, row := range b.Status.MemberAcknowledgements {
-		if row.SnapshotRevision == int64(envelope.Revision) {
-			rows = append(rows, row)
-		}
-	}
+	rows := s.currentRows(b, envelope, now)
 	members := s.bindingMembers(b.Status.MemberAcknowledgements, now)
 	if len(s.MemberPatterns) > 0 && !slices.ContainsFunc(members, func(m model.Member) bool { return m.Role == dnsValueNode }) {
 		return false
@@ -854,6 +857,34 @@ func (s *AckSink) bindingConditions(b *dnsv1alpha1.DNSResolverBinding, envelope 
 	if !available && !b.Spec.Tombstone && b.Status.ObservedConfigurationRevision == b.Spec.Configuration.Revision {
 		apimeta.SetStatusCondition(&b.Status.Conditions, metav1.Condition{Type: dnsValueServing, Status: metav1.ConditionUnknown, Reason: "ObservationUnavailable", Message: "Current serving health is unavailable", ObservedGeneration: b.Generation, LastTransitionTime: metav1.NewTime(now)})
 	}
+}
+
+// currentRows are the binding's rows for the committed snapshot, from members
+// whose lease has not lapsed.
+func (s *AckSink) currentRows(b *dnsv1alpha1.DNSResolverBinding, envelope *model.Envelope, now time.Time) []dnsv1alpha1.DNSApplyAcknowledgement {
+	group := s.Region + "/" + s.Shard
+	rows := make([]dnsv1alpha1.DNSApplyAcknowledgement, 0, len(b.Status.MemberAcknowledgements))
+	for _, row := range b.Status.MemberAcknowledgements {
+		if row.SnapshotRevision == int64(envelope.Revision) && s.memberLive(group, row.MemberID, now) {
+			rows = append(rows, row)
+		}
+	}
+	return rows
+}
+
+// servingMembers are the members that any of bindings requires.
+func (s *AckSink) servingMembers(bindings []dnsv1alpha1.DNSResolverBinding, now time.Time) []model.Member {
+	var members []model.Member
+	seen := map[string]bool{}
+	for i := range bindings {
+		for _, member := range s.bindingMembers(bindings[i].Status.MemberAcknowledgements, now) {
+			if !seen[member.MemberID] {
+				seen[member.MemberID] = true
+				members = append(members, member)
+			}
+		}
+	}
+	return members
 }
 
 // patternMemberRetireAfter is how long a pattern member stays required after

@@ -10,7 +10,6 @@ import (
 	"slices"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	dnsv1alpha1 "go.miloapis.com/dns/api/v1alpha1"
@@ -223,14 +222,14 @@ func (s *AckSink) serving(ctx context.Context, a model.MemberAck, row dnsv1alpha
 		return err
 	}
 	if e == nil || e.Epoch != a.Epoch || e.Revision != a.Revision {
-		return s.recordPatternPresence(ctx, a, row)
+		return s.recordPatternPresence(ctx, snapshot, a, row)
 	}
 	binding, err := s.committedBinding(ctx, snapshot, a.ResourceUID)
 	if err != nil {
 		return err
 	}
 	if binding == nil {
-		return s.recordPatternPresence(ctx, a, row)
+		return s.recordPatternPresence(ctx, snapshot, a, row)
 	}
 	return s.recordServing(ctx, binding, a, row, e, snapshot, now)
 }
@@ -238,60 +237,56 @@ func (s *AckSink) serving(ctx context.Context, a model.MemberAck, row dnsv1alpha
 // committedBinding reads the binding with uid at the fence the committed
 // snapshot serves; it is nil when the snapshot does not serve it there.
 func (s *AckSink) committedBinding(ctx context.Context, snapshot *model.ServingSnapshot, uid string) (*dnsv1alpha1.DNSResolverBinding, error) {
-	i := slices.IndexFunc(snapshot.Bindings, func(b model.Binding) bool { return b.BindingUID == uid })
-	if i < 0 {
+	entry, ok := snapshotBinding(snapshot, uid)
+	if !ok {
 		return nil, nil
 	}
-	b, err := s.resolverBinding(ctx, uid)
-	if err != nil || b == nil || !servesFence(b, snapshot.Bindings[i]) {
+	b, err := s.resolverBinding(ctx, entry)
+	if err != nil || b == nil || !servesFence(b, entry) {
 		return nil, err
 	}
 	return b, nil
 }
 
-// bindingNames holds each resolver binding's name by namespace and UID, so an
-// acknowledgement reads its one binding by name. A UID names one object for
-// the life of the cluster, so one index serves every sink in the process.
-var bindingNames sync.Map
-
-// resolverBinding reads the binding with uid, or nil when there is none. A UID
-// the index does not hold lists the namespace once, and indexes each binding.
-func (s *AckSink) resolverBinding(ctx context.Context, uid string) (*dnsv1alpha1.DNSResolverBinding, error) {
-	if b, err := s.indexedBinding(ctx, uid); b != nil || err != nil {
-		return b, err
+// snapshotBinding is the snapshot's entry for uid, or an entry with the UID
+// alone when the snapshot has none.
+func snapshotBinding(snapshot *model.ServingSnapshot, uid string) (model.Binding, bool) {
+	if snapshot != nil {
+		if i := slices.IndexFunc(snapshot.Bindings, func(b model.Binding) bool { return b.BindingUID == uid }); i >= 0 {
+			return snapshot.Bindings[i], true
+		}
 	}
+	return model.Binding{BindingUID: uid}, false
+}
+
+// resolverBinding reads the binding that entry names, or nil when that name
+// holds another UID. An entry with no name, from a snapshot published before
+// entries carried names, is found by a list of the namespace.
+func (s *AckSink) resolverBinding(ctx context.Context, entry model.Binding) (*dnsv1alpha1.DNSResolverBinding, error) {
+	if entry.BindingName == "" {
+		return s.listedBinding(ctx, entry.BindingUID)
+	}
+	var b dnsv1alpha1.DNSResolverBinding
+	err := s.Client.Get(ctx, client.ObjectKey{Namespace: s.Namespace, Name: entry.BindingName}, &b)
+	if apierrors.IsNotFound(err) || err == nil && string(b.UID) != entry.BindingUID {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &b, nil
+}
+
+func (s *AckSink) listedBinding(ctx context.Context, uid string) (*dnsv1alpha1.DNSResolverBinding, error) {
 	var bindings dnsv1alpha1.DNSResolverBindingList
 	if err := s.Client.List(ctx, &bindings, client.InNamespace(s.Namespace)); err != nil {
 		return nil, err
 	}
-	var found *dnsv1alpha1.DNSResolverBinding
 	for i := range bindings.Items {
-		b := &bindings.Items[i]
-		bindingNames.Store(s.Namespace+"/"+string(b.UID), b.Name)
-		if string(b.UID) == uid {
-			found = b
+		if string(bindings.Items[i].UID) == uid {
+			return &bindings.Items[i], nil
 		}
 	}
-	return found, nil
-}
-
-// indexedBinding reads the binding by the name the index holds for uid. A
-// name that no longer holds that UID leaves the index.
-func (s *AckSink) indexedBinding(ctx context.Context, uid string) (*dnsv1alpha1.DNSResolverBinding, error) {
-	key := s.Namespace + "/" + uid
-	name, ok := bindingNames.Load(key)
-	if !ok {
-		return nil, nil
-	}
-	var b dnsv1alpha1.DNSResolverBinding
-	err := s.Client.Get(ctx, client.ObjectKey{Namespace: s.Namespace, Name: name.(string)}, &b)
-	if err != nil && !apierrors.IsNotFound(err) {
-		return nil, err
-	}
-	if err == nil && string(b.UID) == uid {
-		return &b, nil
-	}
-	bindingNames.Delete(key)
 	return nil, nil
 }
 
@@ -357,14 +352,15 @@ func (s *AckSink) setBindingStatus(b *dnsv1alpha1.DNSResolverBinding, envelope *
 // acknowledged at a revision that could not be recorded, so the member is
 // required for the binding's withdrawal even if it never acknowledges the
 // committed revision. The row proves nothing, because its revision is zero.
-func (s *AckSink) recordPatternPresence(ctx context.Context, a model.MemberAck, row dnsv1alpha1.DNSApplyAcknowledgement) error {
+func (s *AckSink) recordPatternPresence(ctx context.Context, snapshot *model.ServingSnapshot, a model.MemberAck, row dnsv1alpha1.DNSApplyAcknowledgement) error {
 	if len(s.MemberPatterns) == 0 || slices.ContainsFunc(s.Members, func(m model.Member) bool { return m.MemberID == a.MemberID }) {
 		return nil
 	}
 	if _, ok := model.LookupMember(nil, s.MemberPatterns, a.MemberID); !ok {
 		return nil
 	}
-	binding, err := s.resolverBinding(ctx, a.ResourceUID)
+	entry, _ := snapshotBinding(snapshot, a.ResourceUID)
+	binding, err := s.resolverBinding(ctx, entry)
 	if err != nil || binding == nil {
 		return err
 	}

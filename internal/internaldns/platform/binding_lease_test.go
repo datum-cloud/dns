@@ -26,6 +26,8 @@ type bindingFixture struct {
 	member   model.Member
 	binding  client.ObjectKey
 	revision uint64
+	// entryName is the name the next committed snapshot gives the binding.
+	entryName string
 }
 
 func newBindingFixture(t *testing.T, member model.Member) *bindingFixture {
@@ -34,7 +36,7 @@ func newBindingFixture(t *testing.T, member model.Member) *bindingFixture {
 		ObjectMeta: metav1.ObjectMeta{Name: "binding-a", Namespace: "platform", UID: "binding-uid", Labels: map[string]string{"internal-dns.miloapis.com/region": "east", "internal-dns.miloapis.com/shard": "shared"}},
 		Spec:       dnsv1alpha1.DNSResolverBindingSpec{Configuration: dnsv1alpha1.DNSResolverBindingConfiguration{Generation: 1, Revision: 2}, Version: dnsv1alpha1.DNSResolverAccessVersion{Epoch: 1, Sequence: 1}},
 	}
-	f := &bindingFixture{t: t, now: time.Date(2026, 11, 21, 21, 0, 0, 0, time.UTC), member: member, binding: client.ObjectKeyFromObject(binding)}
+	f := &bindingFixture{t: t, now: time.Date(2026, 11, 21, 21, 0, 0, 0, time.UTC), member: member, binding: client.ObjectKeyFromObject(binding), entryName: binding.Name}
 	f.client = testClient(t, binding)
 	f.commit(7)
 	f.sink = &AckSink{Client: f.client, Namespace: "platform", Region: "east", Shard: "shared",
@@ -48,7 +50,7 @@ func (f *bindingFixture) commit(revision uint64) {
 	f.t.Helper()
 	ctx := context.Background()
 	snapshot := model.ServingSnapshot{Region: "east", Shard: "shared", ConfigurationEpoch: 1, ConfigurationRevision: revision, GeneratedAt: f.now,
-		Bindings: []model.Binding{{BindingUID: "binding-uid", BindingName: "binding-a", BindingGeneration: 1, ConfigurationRevision: 2, Version: model.AccessVersion{Epoch: 1, Sequence: 1}}}}
+		Bindings: []model.Binding{{BindingUID: "binding-uid", BindingName: f.entryName, BindingGeneration: 1, ConfigurationRevision: 2, Version: model.AccessVersion{Epoch: 1, Sequence: 1}}}}
 	envelope, err := model.NewEnvelope(model.KindServingSnapshot, fmt.Sprintf("serving-1-%d", revision), "east", "shared", "owner-uid", 1, revision, f.now, snapshot)
 	if err != nil {
 		f.t.Fatal(err)
@@ -240,25 +242,30 @@ func TestServingReadsTheNamedBindingNotTheNamespace(t *testing.T) {
 	}
 }
 
-func TestServingFindsABindingTheIndexNamesWrongly(t *testing.T) {
+func TestServingFindsTheBindingOfASnapshotWithoutNames(t *testing.T) {
 	f := newBindingFixture(t, model.Member{MemberID: "regional-0", ReplicaID: "regional-0", Role: "regional"})
+	f.entryName = ""
+	f.commit(8)
 	f.ack(model.AckVerified, "")
-	ctx := context.Background()
-	moved := f.get()
-	if err := f.client.Delete(ctx, &moved); err != nil {
-		t.Fatal(err)
+	if got := f.get(); len(got.Status.MemberAcknowledgements) != 1 || got.Status.Phase != dnsValueServing {
+		t.Fatalf("an acknowledgement of a snapshot without names did not reach its binding: %#v", got.Status)
 	}
-	moved.ObjectMeta = metav1.ObjectMeta{Name: "binding-b", Namespace: "platform", UID: moved.UID, Labels: moved.Labels}
-	moved.Status = dnsv1alpha1.DNSResolverBindingStatus{}
-	if err := f.client.Create(ctx, &moved); err != nil {
-		t.Fatal(err)
-	}
-	f.binding = client.ObjectKeyFromObject(&moved)
+}
 
-	f.now = f.now.Add(time.Second)
+func TestServingLeavesANameThatHoldsAnotherBinding(t *testing.T) {
+	f := newBindingFixture(t, model.Member{MemberID: "regional-0", ReplicaID: "regional-0", Role: "regional"})
+	ctx := context.Background()
+	old := f.get()
+	if err := f.client.Delete(ctx, &old); err != nil {
+		t.Fatal(err)
+	}
+	recreated := &dnsv1alpha1.DNSResolverBinding{ObjectMeta: metav1.ObjectMeta{Name: old.Name, Namespace: old.Namespace, UID: "binding-uid-2", Labels: old.Labels}, Spec: old.Spec}
+	if err := f.client.Create(ctx, recreated); err != nil {
+		t.Fatal(err)
+	}
 	f.ack(model.AckVerified, "")
-	if got := f.get(); len(got.Status.MemberAcknowledgements) != 1 {
-		t.Fatalf("the acknowledgement did not reach the binding under its new name: %#v", got.Status)
+	if got := f.get(); len(got.Status.MemberAcknowledgements) != 0 {
+		t.Fatalf("an acknowledgement of the old UID was written to the binding that took its name: %#v", got.Status)
 	}
 }
 

@@ -200,7 +200,7 @@ func (p *Planner) Step(ctx context.Context) error {
 		if b.Placement.Region != c.Region || b.Placement.Shard != c.Shard || !obj.DeletionTimestamp.IsZero() {
 			continue
 		}
-		view := model.Binding{BindingUID: string(obj.UID), ProjectUID: string(b.Source.ProjectUID), ContextUID: string(b.Source.ResolverContextRef.UID), BindingGeneration: uint64(b.Configuration.Generation), ConfigurationRevision: uint64(b.Configuration.Revision), ConsumerAddress: b.Configuration.Query.NodeAddress, ClusterAddress: b.Configuration.Query.RegionalAddress, Port: uint16(53), NodeBackends: c.NodeBackends, ClusterBackends: c.ClusterBackends, Version: model.AccessVersion{Epoch: uint64(b.Version.Epoch), Sequence: uint64(b.Version.Sequence)}, Tombstone: b.Tombstone}
+		view := model.Binding{BindingUID: string(obj.UID), BindingName: obj.Name, ProjectUID: string(b.Source.ProjectUID), ContextUID: string(b.Source.ResolverContextRef.UID), BindingGeneration: uint64(b.Configuration.Generation), ConfigurationRevision: uint64(b.Configuration.Revision), ConsumerAddress: b.Configuration.Query.NodeAddress, ClusterAddress: b.Configuration.Query.RegionalAddress, Port: uint16(53), NodeBackends: c.NodeBackends, ClusterBackends: c.ClusterBackends, Version: model.AccessVersion{Epoch: uint64(b.Version.Epoch), Sequence: uint64(b.Version.Sequence)}, Tombstone: b.Tombstone}
 		view.Transports = []model.Transport{model.TransportUDP, model.TransportTCP}
 		// Carry withdrawals as explicit, versioned shard state. Omission still
 		// withdraws for compatibility, but it cannot be acknowledged against the

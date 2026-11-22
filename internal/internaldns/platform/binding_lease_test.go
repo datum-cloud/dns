@@ -48,7 +48,7 @@ func (f *bindingFixture) commit(revision uint64) {
 	f.t.Helper()
 	ctx := context.Background()
 	snapshot := model.ServingSnapshot{Region: "east", Shard: "shared", ConfigurationEpoch: 1, ConfigurationRevision: revision, GeneratedAt: f.now,
-		Bindings: []model.Binding{{BindingUID: "binding-uid", BindingGeneration: 1, ConfigurationRevision: 2, Version: model.AccessVersion{Epoch: 1, Sequence: 1}}}}
+		Bindings: []model.Binding{{BindingUID: "binding-uid", BindingName: "binding-a", BindingGeneration: 1, ConfigurationRevision: 2, Version: model.AccessVersion{Epoch: 1, Sequence: 1}}}}
 	envelope, err := model.NewEnvelope(model.KindServingSnapshot, fmt.Sprintf("serving-1-%d", revision), "east", "shared", "owner-uid", 1, revision, f.now, snapshot)
 	if err != nil {
 		f.t.Fatal(err)
@@ -226,8 +226,6 @@ func TestServingReadsTheNamedBindingNotTheNamespace(t *testing.T) {
 	counter := &listCounter{Client: f.client}
 	f.sink.Client = counter
 	f.ack(model.AckVerified, "")
-	counter.lists = 0
-
 	for range 3 {
 		f.now = f.now.Add(30 * time.Second)
 		f.ack(model.AckVerified, "")
@@ -235,7 +233,7 @@ func TestServingReadsTheNamedBindingNotTheNamespace(t *testing.T) {
 	f.now = f.now.Add(memberRowLease - memberRowRenewBefore)
 	f.ack(model.AckVerified, "")
 	if counter.lists != 0 {
-		t.Fatalf("acknowledgements of a known binding listed the namespace %d times", counter.lists)
+		t.Fatalf("acknowledgements of a binding the snapshot names listed the namespace %d times", counter.lists)
 	}
 	if got := f.get(); !got.Status.MemberAcknowledgements[0].ValidUntil.Time.Equal(f.now.Add(memberRowLease)) {
 		t.Fatalf("the binding read by name was not written: %#v", got.Status.MemberAcknowledgements)
@@ -261,5 +259,29 @@ func TestServingFindsABindingTheIndexNamesWrongly(t *testing.T) {
 	f.ack(model.AckVerified, "")
 	if got := f.get(); len(got.Status.MemberAcknowledgements) != 1 {
 		t.Fatalf("the acknowledgement did not reach the binding under its new name: %#v", got.Status)
+	}
+}
+
+func TestPlannerSnapshotNamesEachBinding(t *testing.T) {
+	now := time.Date(2026, 11, 22, 9, 0, 0, 0, time.UTC)
+	region, shard, ns := "east", "shared", "platform"
+	state, err := json.Marshal(shardState{Holder: "planner", Epoch: 1, NextRevision: 1, LeaseUntil: now.Add(time.Minute)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "dns-shard-owner-" + model.OpaqueToken(region+"/"+shard), Namespace: ns, UID: "shard-owner-uid"}, Data: map[string]string{"state": string(state)}}
+	binding := &dnsv1alpha1.DNSResolverBinding{ObjectMeta: metav1.ObjectMeta{Name: "binding-a", Namespace: ns, UID: "binding-uid", Labels: map[string]string{"internal-dns.miloapis.com/region": region, "internal-dns.miloapis.com/shard": shard}},
+		Spec: dnsv1alpha1.DNSResolverBindingSpec{Source: dnsv1alpha1.DNSResolverBindingSource{ProjectUID: "project", ResolverContextRef: dnsv1alpha1.DNSObjectReference{Name: "vpc", UID: "vpc"}},
+			Placement:     dnsv1alpha1.DNSResolverBindingPlacement{Region: region, Shard: shard},
+			Configuration: dnsv1alpha1.DNSResolverBindingConfiguration{Generation: 1, Revision: 1, Query: dnsv1alpha1.DNSResolverBindingQuery{NodeAddress: "fd53::1", RegionalAddress: "fd54::1"}},
+			Version:       dnsv1alpha1.DNSResolverAccessVersion{Epoch: 1, Sequence: 1}}}
+	cl := testClient(t, owner, binding)
+	p := &Planner{Client: cl, Allocator: &Allocator{Client: cl, Namespace: ns}, Config: PlannerConfig{Namespace: ns, Region: region, Shard: shard, Identity: "planner", ClusterBackends: []model.Backend{{MemberID: "cluster-1", Address: "fd00::20", Port: 5300}}}, Now: func() time.Time { return now }}
+	if err := p.Step(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := latestPlannerSnapshot(t, p)
+	if len(snapshot.Bindings) != 1 || snapshot.Bindings[0].BindingName != "binding-a" {
+		t.Fatalf("the snapshot does not name its binding: %#v", snapshot.Bindings)
 	}
 }

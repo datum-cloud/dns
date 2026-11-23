@@ -243,3 +243,61 @@ func TestPlannerCountsAServedBindingThatNoLongerFits(t *testing.T) {
 	}
 	requirePublishRefusals(t, shard, map[string]float64{"established_binding": 1})
 }
+
+// requireBindingRefusals requires each refusal reason's count, a reason
+// missing from want at zero.
+func requireBindingRefusals(t *testing.T, shard string, want map[string]float64) {
+	t.Helper()
+	for _, reason := range []string{"max_bindings", "max_snapshot_bytes", "established_binding"} {
+		if got := requireShardMetric(t, "internal_dns_serving_binding_refusals_total", shard, "reason", reason); got != want[reason] {
+			t.Fatalf("shard %s: %s binding refusals %v, want %v", shard, reason, got, want[reason])
+		}
+	}
+}
+
+func TestPlannerCountsABindingOverTheBindingBudgetAtEachPass(t *testing.T) {
+	ctx := context.Background()
+	shard := "refused-binding-count"
+	p := capacityPlanner(t, PlannerConfig{Shard: shard, MaxBindings: 2}, shardBinding(shard, 1), shardBinding(shard, 2), shardBinding(shard, 3))
+	if err := p.Step(ctx); err != nil {
+		t.Fatal(err)
+	}
+	requireBindingRefusals(t, shard, map[string]float64{"max_bindings": 1})
+	if err := p.Step(ctx); err != nil {
+		t.Fatal(err)
+	}
+	requireBindingRefusals(t, shard, map[string]float64{"max_bindings": 2})
+}
+
+func TestPlannerCountsABindingOverTheByteBudget(t *testing.T) {
+	shard := "refused-binding-bytes"
+	large := shardBinding(shard, 2)
+	large.Spec.Configuration.ZoneApices = map[string]string{}
+	for i := range 64 {
+		zone := types.UID(fmt.Sprintf("zone-%d", i))
+		large.Spec.Configuration.ZoneRefs = append(large.Spec.Configuration.ZoneRefs, dnsv1alpha1.DNSObjectReference{Name: string(zone), UID: zone})
+		large.Spec.Configuration.ZoneApices[string(zone)] = fmt.Sprintf("z%d.internal", i)
+	}
+	p := capacityPlanner(t, PlannerConfig{Shard: shard, MaxSnapshotBytes: 4096}, shardBinding(shard, 1), large)
+	if err := p.Step(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	requireBindingRefusals(t, shard, map[string]float64{"max_snapshot_bytes": 1})
+}
+
+func TestPlannerCountsTheNewBindingsOfARefusedSnapshot(t *testing.T) {
+	ctx := context.Background()
+	shard := "refused-binding-established"
+	p := capacityPlanner(t, PlannerConfig{Shard: shard}, shardBinding(shard, 1), shardBinding(shard, 2))
+	if err := p.Step(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Client.Create(ctx, shardBinding(shard, 3)); err != nil {
+		t.Fatal(err)
+	}
+	p.Config.MaxBindings = 1
+	if err := p.Step(ctx); err == nil {
+		t.Fatal("a snapshot that drops a served binding was published")
+	}
+	requireBindingRefusals(t, shard, map[string]float64{"max_bindings": 1, "established_binding": 1})
+}

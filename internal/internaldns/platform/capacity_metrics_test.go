@@ -228,6 +228,9 @@ func TestPlannerCountsAnEnvelopeOverItsBudget(t *testing.T) {
 		t.Fatal("an envelope over its 100-byte budget was published")
 	}
 	requirePublishRefusals(t, shard, map[string]float64{"max_snapshot_bytes": 1})
+	if got := requireShardMetric(t, "internal_dns_serving_envelope_bytes", shard); got <= 100 {
+		t.Fatalf("envelope size %v for an envelope refused over its 100-byte budget", got)
+	}
 }
 
 func TestPlannerCountsAServedBindingThatNoLongerFits(t *testing.T) {

@@ -72,11 +72,15 @@ func (a *Allocator) Allocate(ctx context.Context, projectUID, contextUID types.U
 	if err != nil {
 		return "", err
 	}
-	// A region's pool is fixed once leased from: a lease outside it means the
-	// pool was renumbered, and its regional router no longer routes the lease.
-	if own {
-		if address, parseErr := netip.ParseAddr(lease.ClusterAddress); parseErr != nil || !prefix.Contains(address) {
-			return "", fmt.Errorf("region %q lease %s is outside its regional pool %s; regional pools cannot be renumbered", region, lease.ClusterAddress, prefix)
+	// A lease outside the pool predates a change of the region's range. The
+	// context gets an address in the new range; its old claim is freed by the
+	// release sweep once nothing routes it.
+	if address, parseErr := netip.ParseAddr(lease.ClusterAddress); parseErr != nil || !prefix.Contains(address.Unmap()) {
+		if err := a.dropLease(ctx, owner); err != nil {
+			return "", err
+		}
+		if lease, err = a.reserve(ctx, string(projectUID), string(contextUID), owner, prefix); err != nil {
+			return "", err
 		}
 	}
 	return lease.ClusterAddress, nil
@@ -494,6 +498,18 @@ func (a *Allocator) Reclaim(ctx context.Context, projectUID, contextUID types.UI
 
 func (a *Allocator) regionalClaim(owner, address string) *corev1.ConfigMap {
 	return &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "dns-address-claim-" + model.OpaqueToken(address), Namespace: a.Namespace, Labels: map[string]string{leaseLabel: "true"}}, Data: map[string]string{"owner": owner, "address": address}}
+}
+
+// dropLease deletes the owner's lease so the next reservation starts afresh.
+func (a *Allocator) dropLease(ctx context.Context, owner string) error {
+	var stored corev1.ConfigMap
+	err := a.Client.Get(ctx, client.ObjectKey{Namespace: a.Namespace, Name: "dns-address-owner-" + model.OpaqueToken(owner)}, &stored)
+	if apierrors.IsNotFound(err) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	return a.deleteClaim(ctx, &stored)
 }
 
 func decodeLease(stored corev1.ConfigMap, owner string) (AddressLease, error) {

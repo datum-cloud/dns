@@ -463,3 +463,35 @@ func TestRegionalAllocatorReleasesOnlyItsRegionsClaims(t *testing.T) {
 		t.Fatal("another region's claim was released by this region's control plane")
 	}
 }
+
+func TestAllocationMovesAContextOffAReplacedRange(t *testing.T) {
+	ctx := context.Background()
+	cl := testClient(t)
+	for _, tc := range []struct {
+		name     string
+		old, new Allocator
+	}{
+		{"shared pool", Allocator{Client: cl, Namespace: "platform", ClusterPrefix: "fd70:200::/96"}, Allocator{Client: cl, Namespace: "platform", ClusterPrefix: "fd70:202::/96"}},
+		{"own pool", Allocator{Client: cl, Namespace: "platform", RegionalPrefixes: map[string]string{"east": "fd70:300::/96"}}, Allocator{Client: cl, Namespace: "platform", RegionalPrefixes: map[string]string{"east": "fd70:302::/96"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			contextUID := types.UID("context-" + strings.ReplaceAll(tc.name, " ", "-"))
+			before, err := tc.old.Allocate(ctx, "project", contextUID, "east")
+			if err != nil {
+				t.Fatal(err)
+			}
+			after, err := tc.new.Allocate(ctx, "project", contextUID, "east")
+			if err != nil {
+				t.Fatalf("allocating after the range changed failed: %v", err)
+			}
+			pool, _ := tc.new.prefixFor("east")
+			if after == before || !pool.Contains(netip.MustParseAddr(after)) {
+				t.Fatalf("got %s after the range changed from %s, want an address in %s", after, before, pool)
+			}
+			again, err := tc.new.Allocate(ctx, "project", contextUID, "east")
+			if err != nil || again != after {
+				t.Fatalf("the new lease was not kept: %s %v", again, err)
+			}
+		})
+	}
+}

@@ -13,6 +13,10 @@ import (
 )
 
 const (
+	// The loop checks in every regionalAddressReleaseCheck, so its success
+	// stays fresh for the stale-loop alert, and sweeps every
+	// regionalAddressReleaseInterval.
+	regionalAddressReleaseCheck    = 30 * time.Second
 	regionalAddressReleaseInterval = 10 * time.Minute
 	// regionalAddressGrace outlasts the gap between a claim and its binding.
 	regionalAddressGrace = 10 * time.Minute
@@ -38,7 +42,12 @@ func init() {
 }
 
 func regionalAddressRelease(allocator *platform.Allocator, dryRun bool) func(context.Context) error {
+	var last time.Time
 	return func(ctx context.Context) error {
+		if !last.IsZero() && time.Since(last) < regionalAddressReleaseInterval {
+			return nil
+		}
+		last = time.Now()
 		result, err := allocator.ReleaseRegionalAddresses(ctx, time.Now(), regionalAddressGrace, dryRun)
 		// A sweep with errors saw only part of the claims.
 		if err == nil {

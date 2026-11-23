@@ -147,7 +147,8 @@ func (a *Allocator) ReleaseRegionalAddresses(ctx context.Context, now time.Time,
 			}
 			delete(leases, lease.Name)
 		}
-		if err := a.deleteClaim(ctx, claim); apierrors.IsConflict(err) {
+		deleted, err := a.deleteIfPresent(ctx, claim)
+		if apierrors.IsConflict(err) {
 			result.InUse++
 			continue
 		} else if err != nil {
@@ -155,7 +156,10 @@ func (a *Allocator) ReleaseRegionalAddresses(ctx context.Context, now time.Time,
 			continue
 		}
 		delete(claims, address)
-		result.Released++
+		// Another replica's sweep may have freed it first.
+		if deleted {
+			result.Released++
+		}
 	}
 
 	for _, lease := range leases {
@@ -188,10 +192,13 @@ func (a *Allocator) ReleaseRegionalAddresses(ctx context.Context, now time.Time,
 			continue
 		}
 		if !dryRun {
-			if err := a.deleteClaim(ctx, lease); apierrors.IsConflict(err) {
+			deleted, err := a.deleteIfPresent(ctx, lease)
+			if apierrors.IsConflict(err) {
 				continue
 			} else if err != nil {
 				errs = errors.Join(errs, err)
+				continue
+			} else if !deleted {
 				continue
 			}
 		}
@@ -302,6 +309,17 @@ func (a *Allocator) regionalRouted(ctx context.Context, index addressIndex, cach
 		}
 	}
 	return false, nil
+}
+
+// deleteIfPresent deletes obj at the version it was read, and reports false
+// when it was already gone.
+func (a *Allocator) deleteIfPresent(ctx context.Context, obj *corev1.ConfigMap) (bool, error) {
+	uid, version := obj.UID, obj.ResourceVersion
+	err := a.Client.Delete(ctx, obj, client.Preconditions{UID: &uid, ResourceVersion: &version})
+	if apierrors.IsNotFound(err) {
+		return false, nil
+	}
+	return err == nil, err
 }
 
 func (a *Allocator) restoreClaim(ctx context.Context, owner, address string) error {

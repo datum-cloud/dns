@@ -263,7 +263,7 @@ func (p *Planner) Step(ctx context.Context) error {
 	if maxBytes <= 0 {
 		maxBytes = 512 * 1024
 	}
-	servingEnvelopeBudgetBytes.WithLabelValues(c.Region, c.Shard).Set(float64(maxBytes))
+	recordBudgets(c.Region, c.Shard, maxBindings, maxBytes)
 	var rejected map[string]bool
 	var fitErr error
 	snapshot, rejected, fitErr = fitSnapshot(snapshot, prior, maxBindings, maxBytes)

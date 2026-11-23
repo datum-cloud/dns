@@ -10,7 +10,12 @@ import (
 
 // bindingFence retains mapping lifetime and order independently of shard snapshots.
 type bindingFence struct {
-	Identity                string              `json:"identity"`
+	Identity string `json:"identity"`
+	// Pinned is the part of Identity that may never change: the source and the
+	// listener port and transports. The addresses may move with a newer
+	// configuration revision. Fences written before it was recorded leave it
+	// empty.
+	Pinned                  string              `json:"pinned,omitempty"`
 	ConfigurationGeneration uint64              `json:"configurationGeneration"`
 	ConfigurationRevision   uint64              `json:"configurationRevision"`
 	Version                 model.AccessVersion `json:"version"`
@@ -28,8 +33,19 @@ func bindingIdentity(b model.Binding) string {
 	return model.Hash(data)
 }
 
+func bindingPinnedIdentity(b model.Binding) string {
+	transports := append([]model.Transport(nil), b.Transports...)
+	sort.Slice(transports, func(i, j int) bool { return transports[i] < transports[j] })
+	data, _ := json.Marshal(struct {
+		Project, Context string
+		Port             uint16
+		Transports       []model.Transport
+	}{b.ProjectUID, b.ContextUID, b.Port, transports})
+	return model.Hash(data)
+}
+
 func bindingFenceFor(b model.Binding) bindingFence {
-	return bindingFence{Identity: bindingIdentity(b), ConfigurationGeneration: b.BindingGeneration, ConfigurationRevision: b.ConfigurationRevision, Version: b.Version, Tombstone: b.Tombstone}
+	return bindingFence{Identity: bindingIdentity(b), Pinned: bindingPinnedIdentity(b), ConfigurationGeneration: b.BindingGeneration, ConfigurationRevision: b.ConfigurationRevision, Version: b.Version, Tombstone: b.Tombstone}
 }
 
 func advanceBindingFences(prior map[string]bindingFence, snapshot model.ServingSnapshot) (map[string]bindingFence, error) {
@@ -42,8 +58,11 @@ func advanceBindingFences(prior map[string]bindingFence, snapshot model.ServingS
 	for _, b := range snapshot.Bindings {
 		candidate := bindingFenceFor(b)
 		if old, ok := prior[b.BindingUID]; ok {
-			if candidate.Identity != old.Identity {
+			if old.Pinned != "" && candidate.Pinned != old.Pinned {
 				return nil, fmt.Errorf("binding %s changed its UID-pinned source or listeners", b.BindingUID)
+			}
+			if candidate.Identity != old.Identity && candidate.ConfigurationRevision <= old.ConfigurationRevision {
+				return nil, fmt.Errorf("binding %s moved its addresses without a newer configuration revision", b.BindingUID)
 			}
 			if candidate.ConfigurationGeneration < old.ConfigurationGeneration || candidate.ConfigurationRevision < old.ConfigurationRevision {
 				return nil, fmt.Errorf("binding %s configuration regressed", b.BindingUID)

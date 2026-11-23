@@ -19,6 +19,8 @@ import (
 // envelope is never shorter than the one published.
 var envelopeSizingTime = time.Date(2000, 1, 1, 0, 0, 0, 999999999, time.UTC)
 
+var errEstablishedBindingDoesNotFit = errors.New("capacity cannot preserve established binding")
+
 func fitSnapshot(snapshot model.ServingSnapshot, prior model.ServingSnapshot, maxBindings, maxBytes int) (model.ServingSnapshot, map[string]bool, error) {
 	previous := map[string]model.Binding{}
 	for _, binding := range prior.Bindings {
@@ -115,7 +117,7 @@ func fitSnapshot(snapshot model.ServingSnapshot, prior model.ServingSnapshot, ma
 					rejected[candidate.BindingUID] = true
 				}
 			}
-			return prior, rejected, fmt.Errorf("capacity cannot preserve established binding %s", binding.BindingUID)
+			return prior, rejected, fmt.Errorf("%w %s", errEstablishedBindingDoesNotFit, binding.BindingUID)
 		}
 	}
 	sort.Slice(snapshot.Bindings, func(i, j int) bool { return snapshot.Bindings[i].BindingUID < snapshot.Bindings[j].BindingUID })

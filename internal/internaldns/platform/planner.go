@@ -39,6 +39,17 @@ type PlannerConfig struct {
 	MaxSnapshotBytes int `json:"maxSnapshotBytes,omitempty"`
 }
 
+func (c PlannerConfig) budgets() (maxBindings, maxBytes int) {
+	maxBindings, maxBytes = c.MaxBindings, c.MaxSnapshotBytes
+	if maxBindings <= 0 {
+		maxBindings = 256
+	}
+	if maxBytes <= 0 {
+		maxBytes = 512 * 1024
+	}
+	return maxBindings, maxBytes
+}
+
 type shardState struct {
 	Holder       string    `json:"holder"`
 	Epoch        uint64    `json:"epoch"`
@@ -255,19 +266,14 @@ func (p *Planner) Step(ctx context.Context) error {
 	}
 	sort.Slice(snapshot.Bindings, func(i, j int) bool { return snapshot.Bindings[i].BindingUID < snapshot.Bindings[j].BindingUID })
 	sort.Slice(snapshot.Members, func(i, j int) bool { return snapshot.Members[i].MemberID < snapshot.Members[j].MemberID })
-	maxBindings := c.MaxBindings
-	if maxBindings <= 0 {
-		maxBindings = 256
-	}
-	maxBytes := c.MaxSnapshotBytes
-	if maxBytes <= 0 {
-		maxBytes = 512 * 1024
-	}
-	recordBudgets(c.Region, c.Shard, maxBindings, maxBytes)
+	maxBindings, maxBytes := c.budgets()
+	capacity := shardCapacity{region: c.Region, shard: c.Shard}
+	capacity.budgets(maxBindings, maxBytes)
 	var rejected map[string]bool
 	var fitErr error
 	snapshot, rejected, fitErr = fitSnapshot(snapshot, prior, maxBindings, maxBytes)
 	if fitErr != nil {
+		capacity.refusedFit(fitErr)
 		if err := p.reportCapacity(ctx, bindings.Items, rejected, now); err != nil {
 			log.FromContext(ctx).Error(err, "report shard capacity")
 		}
@@ -315,9 +321,9 @@ func (p *Planner) Step(ctx context.Context) error {
 		return err
 	}
 	payload, _ := json.Marshal(env)
-	servingEnvelopeBytes.WithLabelValues(c.Region, c.Shard).Set(float64(len(payload)))
-	servingBindings.WithLabelValues(c.Region, c.Shard).Set(float64(len(snapshot.Bindings)))
+	capacity.encoded(len(payload), len(snapshot.Bindings))
 	if len(payload) > maxBytes {
+		capacity.refusedPublish(refusedMaxSnapshotBytes)
 		return fmt.Errorf("shard serving envelope exceeds configured transport budget: %d > %d", len(payload), maxBytes)
 	}
 	// Reserve the revision before writing immutable artifacts. A crash after

@@ -39,6 +39,17 @@ type PlannerConfig struct {
 	MaxSnapshotBytes int `json:"maxSnapshotBytes,omitempty"`
 }
 
+func (c PlannerConfig) budgets() (maxBindings, maxBytes int) {
+	maxBindings, maxBytes = c.MaxBindings, c.MaxSnapshotBytes
+	if maxBindings <= 0 {
+		maxBindings = 256
+	}
+	if maxBytes <= 0 {
+		maxBytes = 512 * 1024
+	}
+	return maxBindings, maxBytes
+}
+
 type shardState struct {
 	Holder       string    `json:"holder"`
 	Epoch        uint64    `json:"epoch"`
@@ -62,8 +73,9 @@ type Planner struct {
 
 	// Outboxes are immutable and named by revision, so the prior snapshot's
 	// bytes are reused until the active outbox changes.
-	priorOutbox  string
-	priorPayload []byte
+	priorOutbox        string
+	priorPayload       []byte
+	priorEnvelopeBytes int
 }
 
 func (p *Planner) ownerKey() client.ObjectKey {
@@ -117,6 +129,7 @@ func (p *Planner) Step(ctx context.Context) error {
 		lease = 30 * time.Second
 	}
 	key := p.ownerKey()
+	capacity := shardCapacity{region: c.Region, shard: c.Shard}
 	var owner corev1.ConfigMap
 	if err := p.Client.Get(ctx, key, &owner); apierrors.IsNotFound(err) {
 		state := shardState{Holder: c.Identity, Epoch: model.NextWriterEpoch(0, now), NextRevision: 1, LeaseUntil: now.Add(lease)}
@@ -135,6 +148,7 @@ func (p *Planner) Step(ctx context.Context) error {
 	}
 	if state.Holder != c.Identity {
 		if state.LeaseUntil.After(now) {
+			capacity.forget()
 			return nil
 		}
 		state.Holder = c.Identity
@@ -255,17 +269,12 @@ func (p *Planner) Step(ctx context.Context) error {
 	}
 	sort.Slice(snapshot.Bindings, func(i, j int) bool { return snapshot.Bindings[i].BindingUID < snapshot.Bindings[j].BindingUID })
 	sort.Slice(snapshot.Members, func(i, j int) bool { return snapshot.Members[i].MemberID < snapshot.Members[j].MemberID })
-	maxBindings := c.MaxBindings
-	if maxBindings <= 0 {
-		maxBindings = 256
-	}
-	maxBytes := c.MaxSnapshotBytes
-	if maxBytes <= 0 {
-		maxBytes = 512 * 1024
-	}
-	var rejected map[string]bool
+	maxBindings, maxBytes := c.budgets()
+	capacity.budgets(maxBindings, maxBytes)
+	var rejected map[string]string
 	var fitErr error
 	snapshot, rejected, fitErr = fitSnapshot(snapshot, prior, maxBindings, maxBytes)
+	capacity.fitted(rejected, publishRefusals(fitErr))
 	if fitErr != nil {
 		if err := p.reportCapacity(ctx, bindings.Items, rejected, now); err != nil {
 			log.FromContext(ctx).Error(err, "report shard capacity")
@@ -291,6 +300,7 @@ func (p *Planner) Step(ctx context.Context) error {
 	b, _ := json.Marshal(comparison)
 	hash := model.Hash(b)
 	if state.ContentHash == hash {
+		capacity.encoded(p.priorEnvelopeBytes, len(snapshot.Bindings))
 		if state.LeaseUntil.Sub(now) > lease/2 {
 			report()
 			return nil
@@ -314,7 +324,9 @@ func (p *Planner) Step(ctx context.Context) error {
 		return err
 	}
 	payload, _ := json.Marshal(env)
+	capacity.encoded(len(payload), len(snapshot.Bindings))
 	if len(payload) > maxBytes {
+		capacity.refusedPublish(refusedMaxSnapshotBytes)
 		return fmt.Errorf("shard serving envelope exceeds configured transport budget: %d > %d", len(payload), maxBytes)
 	}
 	// Reserve the revision before writing immutable artifacts. A crash after
@@ -425,7 +437,7 @@ func (p *Planner) loadPrior(ctx context.Context, name string) (model.ServingSnap
 		if err := json.Unmarshal(out.Spec.Payload, &e); err != nil {
 			return prior, err
 		}
-		p.priorOutbox, p.priorPayload = name, e.Payload
+		p.priorOutbox, p.priorPayload, p.priorEnvelopeBytes = name, e.Payload, len(out.Spec.Payload)
 	}
 	err := json.Unmarshal(p.priorPayload, &prior)
 	return prior, err

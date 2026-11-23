@@ -55,7 +55,7 @@ func TestByteOverflowPreservesExistingContext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !rejected["binding-1"] || len(bounded.Bindings) != 2 || bounded.Bindings[0].ConfigurationRevision != 1 {
+	if rejected["binding-1"] == "" || len(bounded.Bindings) != 2 || bounded.Bindings[0].ConfigurationRevision != 1 {
 		t.Fatalf("overflow interrupted an established context: %#v", bounded)
 	}
 }
@@ -153,7 +153,7 @@ func TestFailedFitReportsUncheckedBindingsAsRejected(t *testing.T) {
 	if err == nil {
 		t.Fatal("an established binding that no longer fits was accepted")
 	}
-	if !rejected["binding-2"] {
+	if rejected["binding-2"] == "" {
 		t.Fatalf("a binding that was never placed must be reported as rejected: %v", rejected)
 	}
 }

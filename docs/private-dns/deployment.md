@@ -547,6 +547,35 @@ These metrics show leases moving between replicas:
 - `internal_dns_zone_lease_duration_seconds`: the configured lease length.
   Divide remaining time by it to alert on a fraction of the lease.
 
+Each shard's serving snapshot is planned by the replica that holds the
+shard's lease. These gauges show how full the shard is. Only the holder
+exports them; a replica that finds another holder removes them:
+
+- `internal_dns_serving_envelope_bytes{region,shard}`: the size of the serving
+  envelope the planner last encoded, or of the active one while the shard's
+  content is unchanged. It is set at each pass, after a restart too.
+- `internal_dns_serving_envelope_budget_bytes{region,shard}`: the shard's
+  `maxSnapshotBytes`, 524288 when it is not set. The planner publishes no
+  larger envelope.
+- `internal_dns_serving_bindings{region,shard}`: the bindings in that
+  snapshot, withdrawals included, as `maxBindings` counts them.
+- `internal_dns_serving_bindings_budget{region,shard}`: the shard's
+  `maxBindings`, 256 when it is not set.
+
+Divide each gauge by its budget to alert before the shard is full. A full
+shard refuses a new binding and sets its `CapacityAvailable` condition to
+`False`. These counters count at each planner pass, so a refusal that lasts
+keeps counting. Each `reason` is exported at zero from the first pass:
+
+- `internal_dns_serving_publish_refusals_total{region,shard,reason}`: passes
+  that published no snapshot, so members keep the previous one. `reason` is
+  `max_snapshot_bytes` when the envelope is over its budget, or
+  `established_binding` when a binding the shard serves no longer fits.
+- `internal_dns_serving_binding_refusals_total{region,shard,reason}`:
+  bindings left out of the snapshot. `reason` is `max_bindings`,
+  `max_snapshot_bytes`, or `established_binding` when the whole snapshot is
+  refused.
+
 Loops are `project discovery`, `planner`, `ack refresh`, `outbox`, and the
 acknowledgment steps `ack read`, `ack apply`, and `ack commit`. A successful
 loop can be idle; it does not prove that an endpoint is serving. Combine these

@@ -19,7 +19,20 @@ import (
 // envelope is never shorter than the one published.
 var envelopeSizingTime = time.Date(2000, 1, 1, 0, 0, 0, 999999999, time.UTC)
 
-func fitSnapshot(snapshot model.ServingSnapshot, prior model.ServingSnapshot, maxBindings, maxBytes int) (model.ServingSnapshot, map[string]bool, error) {
+var errEstablishedBindingDoesNotFit = errors.New("capacity cannot preserve established binding")
+
+const (
+	refusedMaxBindings        = "max_bindings"
+	refusedMaxSnapshotBytes   = "max_snapshot_bytes"
+	refusedEstablishedBinding = "established_binding"
+)
+
+var (
+	publishRefusalReasons = []string{refusedMaxSnapshotBytes, refusedEstablishedBinding}
+	bindingRefusalReasons = []string{refusedMaxBindings, refusedMaxSnapshotBytes, refusedEstablishedBinding}
+)
+
+func fitSnapshot(snapshot model.ServingSnapshot, prior model.ServingSnapshot, maxBindings, maxBytes int) (model.ServingSnapshot, map[string]string, error) {
 	previous := map[string]model.Binding{}
 	for _, binding := range prior.Bindings {
 		previous[binding.BindingUID] = binding
@@ -34,7 +47,7 @@ func fitSnapshot(snapshot model.ServingSnapshot, prior model.ServingSnapshot, ma
 		return candidates[i].BindingUID < candidates[j].BindingUID
 	})
 	snapshot.Bindings = []model.Binding{}
-	rejected := map[string]bool{}
+	rejected := map[string]string{}
 	envelope, err := model.NewEnvelope(model.KindServingSnapshot, "dns-serving-"+model.OpaqueToken(snapshot.Region+"/"+snapshot.Shard)+"-e18446744073709551615-r18446744073709551615", snapshot.Region, snapshot.Shard, "00000000-0000-0000-0000-000000000000", snapshot.ConfigurationEpoch, snapshot.ConfigurationRevision, envelopeSizingTime, snapshot)
 	if err != nil {
 		return snapshot, rejected, err
@@ -47,17 +60,13 @@ func fitSnapshot(snapshot model.ServingSnapshot, prior model.ServingSnapshot, ma
 	// Each bound zone later adds its highest publication requirement to the
 	// snapshot, so fitting charges for it as it will be encoded.
 	required := map[string]model.PublicationRequirement{}
-	encoded := func(r model.PublicationRequirement) int {
-		data, _ := json.Marshal(r)
-		return len(data)
-	}
-	fits := func(binding model.Binding) bool {
+	refusal := func(binding model.Binding) string {
 		if len(snapshot.Bindings) >= maxBindings {
-			return false
+			return refusedMaxBindings
 		}
 		data, err := json.Marshal(binding)
 		if err != nil {
-			return false
+			return refusedMaxSnapshotBytes
 		}
 		size := len(data)
 		if len(snapshot.Bindings) > 0 {
@@ -80,9 +89,9 @@ func fitSnapshot(snapshot model.ServingSnapshot, prior model.ServingSnapshot, ma
 				} else {
 					size++
 				}
-				size += encoded(requirement)
+				size += encodedSize(requirement)
 			case model.Compare(requirement.Epoch, requirement.Revision, old.Epoch, old.Revision) > 0:
-				if grown := encoded(requirement) - encoded(old); grown > 0 {
+				if grown := encodedSize(requirement) - encodedSize(old); grown > 0 {
 					size += grown
 				}
 			default:
@@ -91,35 +100,50 @@ func fitSnapshot(snapshot model.ServingSnapshot, prior model.ServingSnapshot, ma
 			next[zone.ZoneUID] = requirement
 		}
 		if used+size > maxBytes {
-			return false
+			return refusedMaxSnapshotBytes
 		}
 		used += size
 		for uid, requirement := range next {
 			required[uid] = requirement
 		}
-		return true
+		return ""
 	}
 	for _, binding := range candidates {
-		if fits(binding) {
+		reason := refusal(binding)
+		if reason == "" {
 			snapshot.Bindings = append(snapshot.Bindings, binding)
 			continue
 		}
-		rejected[binding.BindingUID] = true
+		rejected[binding.BindingUID] = reason
 		if old, ok := previous[binding.BindingUID]; ok {
-			if safeExpansion(old, binding) && fits(old) {
+			if safeExpansion(old, binding) && refusal(old) == "" {
 				snapshot.Bindings = append(snapshot.Bindings, old)
 				continue
 			}
 			for _, candidate := range candidates {
 				if _, established := previous[candidate.BindingUID]; !established {
-					rejected[candidate.BindingUID] = true
+					rejected[candidate.BindingUID] = refusedEstablishedBinding
 				}
 			}
-			return prior, rejected, fmt.Errorf("capacity cannot preserve established binding %s", binding.BindingUID)
+			return prior, rejected, fmt.Errorf("%w %s", errEstablishedBindingDoesNotFit, binding.BindingUID)
 		}
 	}
 	sort.Slice(snapshot.Bindings, func(i, j int) bool { return snapshot.Bindings[i].BindingUID < snapshot.Bindings[j].BindingUID })
 	return snapshot, rejected, nil
+}
+
+// publishRefusals gives the reasons a fit error refuses the publish: none for an
+// error that is not a refusal.
+func publishRefusals(err error) []string {
+	if errors.Is(err, errEstablishedBindingDoesNotFit) {
+		return []string{refusedEstablishedBinding}
+	}
+	return nil
+}
+
+func encodedSize(r model.PublicationRequirement) int {
+	data, _ := json.Marshal(r)
+	return len(data)
 }
 
 func safeExpansion(old, candidate model.Binding) bool {
@@ -140,7 +164,7 @@ func safeExpansion(old, candidate model.Binding) bool {
 	return true
 }
 
-func (p *Planner) reportCapacity(ctx context.Context, bindings []dnsv1alpha1.DNSResolverBinding, rejected map[string]bool, now time.Time) error {
+func (p *Planner) reportCapacity(ctx context.Context, bindings []dnsv1alpha1.DNSResolverBinding, rejected map[string]string, now time.Time) error {
 	var failures []error
 	for i := range bindings {
 		binding := &bindings[i]
@@ -148,7 +172,7 @@ func (p *Planner) reportCapacity(ctx context.Context, bindings []dnsv1alpha1.DNS
 			continue
 		}
 		base := binding.DeepCopy()
-		condition(&binding.Status.Conditions, "CapacityAvailable", !rejected[string(binding.UID)], "ShardCapacity", binding.Generation, now)
+		condition(&binding.Status.Conditions, "CapacityAvailable", rejected[string(binding.UID)] == "", "ShardCapacity", binding.Generation, now)
 		if !jsonEqualStatus(base.Status, binding.Status) {
 			if err := p.Client.Status().Patch(ctx, binding, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
 				failures = append(failures, err)

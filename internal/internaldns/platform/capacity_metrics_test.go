@@ -179,3 +179,24 @@ func TestPlannerExportsTheServingBindingCount(t *testing.T) {
 		t.Fatalf("binding count %v, want 3: two bindings and a withdrawal, each a place under maxBindings", got)
 	}
 }
+
+func TestPlannerExportsTheServingBindingBudget(t *testing.T) {
+	for _, tc := range []struct {
+		shard      string
+		configured int
+		want       float64
+	}{
+		{shard: "binding-budget", configured: 200, want: 200},
+		{shard: "binding-budget-default", want: 256},
+	} {
+		t.Run(tc.shard, func(t *testing.T) {
+			p := capacityPlanner(t, PlannerConfig{Shard: tc.shard, MaxBindings: tc.configured}, shardBinding(tc.shard, 1))
+			if err := p.Step(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if got := requireShardMetric(t, "internal_dns_serving_bindings_budget", tc.shard); got != tc.want {
+				t.Fatalf("binding budget %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

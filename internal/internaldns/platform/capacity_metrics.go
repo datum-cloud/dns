@@ -4,6 +4,7 @@ package platform
 
 import (
 	"errors"
+	"strings"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"sigs.k8s.io/controller-runtime/pkg/metrics"
@@ -41,12 +42,12 @@ var servingBindingsBudget = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 
 var servingPublishRefusals = prometheus.NewCounterVec(prometheus.CounterOpts{
 	Name: "internal_dns_serving_publish_refusals_total",
-	Help: "Planner passes that published no serving snapshot for the shard, by reason: max_snapshot_bytes when the envelope is over its budget, established_binding when a binding the shard serves no longer fits. The planner retries at each pass, so a refusal that lasts counts at each pass.",
+	Help: "Planner passes that published no serving snapshot for the shard, by reason: " + strings.Join(publishRefusalReasons, ", ") + ". The planner retries at each pass, so a refusal that lasts counts at each pass.",
 }, refusalLabels)
 
 var servingBindingRefusals = prometheus.NewCounterVec(prometheus.CounterOpts{
 	Name: "internal_dns_serving_binding_refusals_total",
-	Help: "Bindings the planner left out of the shard's serving snapshot, by reason: max_bindings, max_snapshot_bytes, or established_binding when the whole snapshot is refused. Each pass counts each binding it leaves out, so a refusal that lasts counts at each pass.",
+	Help: "Bindings the planner left out of the shard's serving snapshot, by reason: " + strings.Join(bindingRefusalReasons, ", ") + ". Each pass counts each binding it leaves out, so a refusal that lasts counts at each pass.",
 }, refusalLabels)
 
 func init() {
@@ -60,10 +61,10 @@ type shardCapacity struct{ region, shard string }
 func (s shardCapacity) budgets(maxBindings, maxBytes int) {
 	servingBindingsBudget.WithLabelValues(s.region, s.shard).Set(float64(maxBindings))
 	servingEnvelopeBudgetBytes.WithLabelValues(s.region, s.shard).Set(float64(maxBytes))
-	for _, reason := range []string{refusedMaxSnapshotBytes, refusedEstablishedBinding} {
+	for _, reason := range publishRefusalReasons {
 		servingPublishRefusals.WithLabelValues(s.region, s.shard, reason)
 	}
-	for _, reason := range []string{refusedMaxBindings, refusedMaxSnapshotBytes, refusedEstablishedBinding} {
+	for _, reason := range bindingRefusalReasons {
 		servingBindingRefusals.WithLabelValues(s.region, s.shard, reason)
 	}
 }

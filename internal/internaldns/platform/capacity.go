@@ -27,6 +27,11 @@ const (
 	refusedEstablishedBinding = "established_binding"
 )
 
+var (
+	publishRefusalReasons = []string{refusedMaxSnapshotBytes, refusedEstablishedBinding}
+	bindingRefusalReasons = []string{refusedMaxBindings, refusedMaxSnapshotBytes, refusedEstablishedBinding}
+)
+
 func fitSnapshot(snapshot model.ServingSnapshot, prior model.ServingSnapshot, maxBindings, maxBytes int) (model.ServingSnapshot, map[string]string, error) {
 	previous := map[string]model.Binding{}
 	for _, binding := range prior.Bindings {

@@ -121,8 +121,8 @@ type Config struct {
 	// regions and to the federation hub.
 	Feed *FeedConfig `json:"feed,omitempty"`
 	// RegionalAddressRelease controls the sweep that frees regional resolver
-	// address claims nothing routes any more: "enabled" (the default),
-	// "dryRun", which only counts and logs what it would free, or "disabled".
+	// address claims nothing routes any more: "dryRun" (the default), which
+	// only counts and logs what it would free, "enabled", or "disabled".
 	RegionalAddressRelease string `json:"regionalAddressRelease,omitempty"`
 }
 

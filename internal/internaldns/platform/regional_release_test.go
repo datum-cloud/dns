@@ -388,3 +388,62 @@ func TestReclaimKeepsAnAddressStillHeldOrFree(t *testing.T) {
 		t.Fatalf("another context's address was reclaimed: %s %v", got, err)
 	}
 }
+
+func TestRegionalReleaseKeepsAnAddressOnlyTheSnapshotCarries(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().Add(time.Hour)
+	region, shard, ns := "east", "shared", "platform"
+	state, _ := json.Marshal(shardState{Holder: "planner", Epoch: 1, NextRevision: 1, LeaseUntil: now.Add(time.Minute)})
+	owner := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "dns-shard-owner-" + model.OpaqueToken(region+"/"+shard), Namespace: ns, UID: "shard-owner-uid"}, Data: map[string]string{"state": string(state)}}
+	cl := testClient(t, owner)
+	allocator := &Allocator{Client: cl, Namespace: ns}
+	gone, err := allocator.Allocate(ctx, "project-a", "gone", region)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kept, err := allocator.Allocate(ctx, "project-a", "kept", region)
+	if err != nil {
+		t.Fatal(err)
+	}
+	labels := map[string]string{"internal-dns.miloapis.com/region": region, "internal-dns.miloapis.com/shard": shard}
+	served := regionalBinding("gone", "gone", region, gone)
+	served.Labels = labels
+	other := regionalBinding("kept", "kept", region, kept)
+	other.Labels = labels
+	other.Spec.Configuration.Query.NodeAddress = "fd70::54"
+	for _, b := range []*dnsv1alpha1.DNSResolverBinding{served, other} {
+		if err := cl.Create(ctx, b); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p := Planner{Client: cl, Allocator: allocator, Config: PlannerConfig{Namespace: ns, Region: region, Shard: shard, Identity: "planner", ClusterBackends: []model.Backend{{MemberID: "cluster-1", Address: "fd00::20", Port: 5300}}}, Now: func() time.Time { return now }}
+	if err := p.Step(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if snapshot := latestPlannerSnapshot(t, &p); len(snapshot.Bindings) != 2 {
+		t.Fatalf("bindings were not published: %#v", snapshot.Bindings)
+	}
+	// The binding is gone but the committed snapshot still serves its address.
+	if err := cl.Delete(ctx, served); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := allocator.ReleaseRegionalAddresses(ctx, now, 10*time.Minute, false); err != nil {
+		t.Fatal(err)
+	}
+	claims, leases := regionalState(t, cl)
+	if claims[gone] != "project-a/gone" || leases["project-a/gone"] != gone {
+		t.Fatalf("an address the committed snapshot still serves was freed: %v %v", claims, leases)
+	}
+	if err := p.Step(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if snapshot := latestPlannerSnapshot(t, &p); len(snapshot.Bindings) != 1 {
+		t.Fatalf("the deleted binding was not withdrawn from the snapshot: %#v", snapshot.Bindings)
+	}
+	if _, err := allocator.ReleaseRegionalAddresses(ctx, now, 10*time.Minute, false); err != nil {
+		t.Fatal(err)
+	}
+	if claims, _ := regionalState(t, cl); claims[gone] != "" || claims[kept] == "" {
+		t.Fatalf("release after withdrawal freed the wrong addresses: %v", claims)
+	}
+}

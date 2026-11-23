@@ -392,7 +392,7 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 		go retryLoop(ctx, regionLeaseInterval(l.LeaseDuration), loopID{Loop: "region lease", Region: pc.Region}, live, l.Step, errCh)
 	}
 	if cfg.RegionalAddressRelease != regionalAddressReleaseDisabled {
-		release := regionalAddressRelease(allocator, cfg.RegionalAddressRelease == regionalAddressReleaseDryRun)
+		release := regionalAddressRelease(allocator, cfg.RegionalAddressRelease != regionalAddressReleaseEnabled)
 		go retryLoop(ctx, regionalAddressReleaseInterval, loopID{Loop: "regional address release"}, live, release, errCh)
 	}
 	shardPlanners := make([]*platform.Planner, 0, len(planners))

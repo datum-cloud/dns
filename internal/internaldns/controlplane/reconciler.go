@@ -38,7 +38,11 @@ type ReconcilerOptions struct {
 	LeaseDuration         time.Duration
 	Now                   func() time.Time
 	AddressAllocator      AddressAllocator
-	PrivateZoneClassName  string
+	// RequireSuppliedAddresses refuses access bindings without a regional
+	// address and makes no address claims: uniqueness is checked against the
+	// other resolver bindings instead.
+	RequireSuppliedAddresses bool
+	PrivateZoneClassName     string
 	// ManagedDomainSuffixes lists the suffixes a managed namespace domain must
 	// fall strictly below. Empty means DefaultManagedDomainSuffixes.
 	ManagedDomainSuffixes []string
@@ -88,6 +92,9 @@ type AddressAllocator interface {
 	// Reclaim keeps a revived binding's address while its claim is the
 	// context's, and allocates again otherwise.
 	Reclaim(ctx context.Context, projectUID, contextUID types.UID, region, address string) (string, error)
+	ValidateRegional(region, address string) error
+	ClaimRegional(ctx context.Context, projectUID, contextUID types.UID, region, address string) error
+	RegionalClaimedByOther(ctx context.Context, projectUID, contextUID types.UID, region, address string) (bool, error)
 }
 
 func (o *ReconcilerOptions) defaults() {

@@ -447,3 +447,28 @@ func TestRegionalReleaseKeepsAnAddressOnlyTheSnapshotCarries(t *testing.T) {
 		t.Fatalf("release after withdrawal freed the wrong addresses: %v", claims)
 	}
 }
+
+func TestRegionalReleaseCountsOnlyWhatItFrees(t *testing.T) {
+	ctx := context.Background()
+	base := testClient(t)
+	allocator := &Allocator{Client: base, Namespace: "platform"}
+	if _, err := allocator.Allocate(ctx, "project-a", "gone", "east"); err != nil {
+		t.Fatal(err)
+	}
+	// Another replica frees the claim between this sweep's list and delete.
+	cl := interceptor.NewClient(base.(client.WithWatch), interceptor.Funcs{Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+		if strings.HasPrefix(obj.GetName(), regionalClaimPrefix) {
+			if err := c.Delete(ctx, obj.DeepCopyObject().(client.Object)); err != nil {
+				return err
+			}
+		}
+		return c.Delete(ctx, obj, opts...)
+	}})
+	result, err := (&Allocator{Client: cl, Namespace: "platform"}).ReleaseRegionalAddresses(ctx, time.Now().Add(time.Hour), 10*time.Minute, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Released != 0 {
+		t.Fatalf("a claim another replica freed was counted: %+v", result)
+	}
+}

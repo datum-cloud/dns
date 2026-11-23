@@ -552,7 +552,8 @@ shard's lease. These gauges show how full the shard is. Only the holder
 exports them; a replica that finds another holder removes them:
 
 - `internal_dns_serving_envelope_bytes{region,shard}`: the size of the serving
-  envelope the planner last encoded, set at each publish.
+  envelope the planner last encoded, or of the active one while the shard's
+  content is unchanged. It is set at each pass, after a restart too.
 - `internal_dns_serving_envelope_budget_bytes{region,shard}`: the shard's
   `maxSnapshotBytes`, 524288 when it is not set. The planner publishes no
   larger envelope.

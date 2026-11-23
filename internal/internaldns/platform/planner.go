@@ -73,8 +73,9 @@ type Planner struct {
 
 	// Outboxes are immutable and named by revision, so the prior snapshot's
 	// bytes are reused until the active outbox changes.
-	priorOutbox  string
-	priorPayload []byte
+	priorOutbox        string
+	priorPayload       []byte
+	priorEnvelopeBytes int
 }
 
 func (p *Planner) ownerKey() client.ObjectKey {
@@ -299,6 +300,7 @@ func (p *Planner) Step(ctx context.Context) error {
 	b, _ := json.Marshal(comparison)
 	hash := model.Hash(b)
 	if state.ContentHash == hash {
+		capacity.encoded(p.priorEnvelopeBytes, len(snapshot.Bindings))
 		if state.LeaseUntil.Sub(now) > lease/2 {
 			report()
 			return nil
@@ -435,7 +437,7 @@ func (p *Planner) loadPrior(ctx context.Context, name string) (model.ServingSnap
 		if err := json.Unmarshal(out.Spec.Payload, &e); err != nil {
 			return prior, err
 		}
-		p.priorOutbox, p.priorPayload = name, e.Payload
+		p.priorOutbox, p.priorPayload, p.priorEnvelopeBytes = name, e.Payload, len(out.Spec.Payload)
 	}
 	err := json.Unmarshal(p.priorPayload, &prior)
 	return prior, err

@@ -21,7 +21,7 @@ var (
 
 var servingEnvelopeBytes = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 	Name: "internal_dns_serving_envelope_bytes",
-	Help: "Size of the serving envelope the planner last encoded for the shard.",
+	Help: "Size of the serving envelope the planner last encoded for the shard, or of the active one while the shard's content is unchanged.",
 }, shardLabels)
 
 var servingEnvelopeBudgetBytes = prometheus.NewGaugeVec(prometheus.GaugeOpts{
@@ -31,7 +31,7 @@ var servingEnvelopeBudgetBytes = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 
 var servingBindings = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 	Name: "internal_dns_serving_bindings",
-	Help: "Bindings in the serving snapshot the planner last encoded for the shard, withdrawals included, as maxBindings counts them.",
+	Help: "Bindings in the serving snapshot that internal_dns_serving_envelope_bytes measures, withdrawals included, as maxBindings counts them.",
 }, shardLabels)
 
 var servingBindingsBudget = prometheus.NewGaugeVec(prometheus.GaugeOpts{

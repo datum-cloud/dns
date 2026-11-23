@@ -200,3 +200,46 @@ func TestPlannerExportsTheServingBindingBudget(t *testing.T) {
 		})
 	}
 }
+
+// requirePublishRefusals requires each refusal reason's count, a reason
+// missing from want at zero.
+func requirePublishRefusals(t *testing.T, shard string, want map[string]float64) {
+	t.Helper()
+	for _, reason := range []string{"max_snapshot_bytes", "established_binding"} {
+		if got := requireShardMetric(t, "internal_dns_serving_publish_refusals_total", shard, "reason", reason); got != want[reason] {
+			t.Fatalf("shard %s: %s refusals %v, want %v", shard, reason, got, want[reason])
+		}
+	}
+}
+
+func TestPlannerCountsNoRefusedPublishBeforeTheFirst(t *testing.T) {
+	shard := "refused-none"
+	p := capacityPlanner(t, PlannerConfig{Shard: shard}, shardBinding(shard, 1))
+	if err := p.Step(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	requirePublishRefusals(t, shard, nil)
+}
+
+func TestPlannerCountsAnEnvelopeOverItsBudget(t *testing.T) {
+	shard := "refused-envelope"
+	p := capacityPlanner(t, PlannerConfig{Shard: shard, MaxSnapshotBytes: 100})
+	if err := p.Step(context.Background()); err == nil {
+		t.Fatal("an envelope over its 100-byte budget was published")
+	}
+	requirePublishRefusals(t, shard, map[string]float64{"max_snapshot_bytes": 1})
+}
+
+func TestPlannerCountsAServedBindingThatNoLongerFits(t *testing.T) {
+	ctx := context.Background()
+	shard := "refused-established"
+	p := capacityPlanner(t, PlannerConfig{Shard: shard}, shardBinding(shard, 1), shardBinding(shard, 2))
+	if err := p.Step(ctx); err != nil {
+		t.Fatal(err)
+	}
+	p.Config.MaxBindings = 1
+	if err := p.Step(ctx); err == nil {
+		t.Fatal("a snapshot that drops a served binding was published")
+	}
+	requirePublishRefusals(t, shard, map[string]float64{"established_binding": 1})
+}

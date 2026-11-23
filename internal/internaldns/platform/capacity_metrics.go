@@ -17,6 +17,11 @@ var servingEnvelopeBudgetBytes = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 	Help: "The shard's maxSnapshotBytes: the planner publishes no serving envelope larger than this.",
 }, []string{"region", "shard"})
 
+var servingBindings = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+	Name: "internal_dns_serving_bindings",
+	Help: "Bindings in the serving snapshot the planner last encoded for the shard, withdrawals included, as maxBindings counts them.",
+}, []string{"region", "shard"})
+
 func init() {
-	metrics.Registry.MustRegister(servingEnvelopeBytes, servingEnvelopeBudgetBytes)
+	metrics.Registry.MustRegister(servingEnvelopeBytes, servingEnvelopeBudgetBytes, servingBindings)
 }

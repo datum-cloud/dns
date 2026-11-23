@@ -331,3 +331,50 @@ func TestPlannerStopsExportingAShardAnotherProcessHolds(t *testing.T) {
 		}
 	}
 }
+
+func requirePublishedSize(t *testing.T, p *Planner, bindings float64) {
+	t.Helper()
+	shard := p.Config.Shard
+	if got, want := requireShardMetric(t, "internal_dns_serving_envelope_bytes", shard), len(publishedEnvelope(t, p)); got != float64(want) {
+		t.Fatalf("envelope size %v, the published envelope has %d bytes", got, want)
+	}
+	if got := requireShardMetric(t, "internal_dns_serving_bindings", shard); got != bindings {
+		t.Fatalf("binding count %v, want %v", got, bindings)
+	}
+}
+
+// A restarted process with a configured identity holds its shard under the
+// same identity, and starts with no series: forget stands in for the restart.
+func TestPlannerRestartedOnAnUnchangedShardExportsItsSize(t *testing.T) {
+	ctx := context.Background()
+	shard := "restart-unchanged"
+	p := capacityPlanner(t, PlannerConfig{Shard: shard}, shardBinding(shard, 1))
+	if err := p.Step(ctx); err != nil {
+		t.Fatal(err)
+	}
+	shardCapacity{region: capacityRegion, shard: shard}.forget()
+	restarted := &Planner{Client: p.Client, Allocator: p.Allocator, Config: p.Config, Now: p.Now}
+	if err := restarted.Step(ctx); err != nil {
+		t.Fatal(err)
+	}
+	requirePublishedSize(t, restarted, 1)
+}
+
+func TestPlannerTakingOverAnUnchangedShardExportsItsSize(t *testing.T) {
+	ctx := context.Background()
+	shard := "handover-unchanged"
+	p := capacityPlanner(t, PlannerConfig{Shard: shard}, shardBinding(shard, 1))
+	if err := p.Step(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Release(ctx, p.Now()); err != nil {
+		t.Fatal(err)
+	}
+	shardCapacity{region: capacityRegion, shard: shard}.forget()
+	next := &Planner{Client: p.Client, Allocator: p.Allocator, Config: p.Config, Now: p.Now}
+	next.Config.Identity = "next-process"
+	if err := next.Step(ctx); err != nil {
+		t.Fatal(err)
+	}
+	requirePublishedSize(t, next, 1)
+}

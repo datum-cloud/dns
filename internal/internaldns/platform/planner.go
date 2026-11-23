@@ -128,6 +128,7 @@ func (p *Planner) Step(ctx context.Context) error {
 		lease = 30 * time.Second
 	}
 	key := p.ownerKey()
+	capacity := shardCapacity{region: c.Region, shard: c.Shard}
 	var owner corev1.ConfigMap
 	if err := p.Client.Get(ctx, key, &owner); apierrors.IsNotFound(err) {
 		state := shardState{Holder: c.Identity, Epoch: model.NextWriterEpoch(0, now), NextRevision: 1, LeaseUntil: now.Add(lease)}
@@ -146,6 +147,7 @@ func (p *Planner) Step(ctx context.Context) error {
 	}
 	if state.Holder != c.Identity {
 		if state.LeaseUntil.After(now) {
+			capacity.forget()
 			return nil
 		}
 		state.Holder = c.Identity
@@ -267,7 +269,6 @@ func (p *Planner) Step(ctx context.Context) error {
 	sort.Slice(snapshot.Bindings, func(i, j int) bool { return snapshot.Bindings[i].BindingUID < snapshot.Bindings[j].BindingUID })
 	sort.Slice(snapshot.Members, func(i, j int) bool { return snapshot.Members[i].MemberID < snapshot.Members[j].MemberID })
 	maxBindings, maxBytes := c.budgets()
-	capacity := shardCapacity{region: c.Region, shard: c.Shard}
 	capacity.budgets(maxBindings, maxBytes)
 	var rejected map[string]string
 	var fitErr error

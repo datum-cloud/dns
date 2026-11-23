@@ -58,6 +58,14 @@ func (s shardCapacity) budgets(maxBindings, maxBytes int) {
 	}
 }
 
+// forget removes the shard's gauges from a process that no longer plans
+// it, so that only the shard's holder exports its size.
+func (s shardCapacity) forget() {
+	for _, gauge := range []*prometheus.GaugeVec{servingEnvelopeBytes, servingEnvelopeBudgetBytes, servingBindings, servingBindingsBudget} {
+		gauge.DeleteLabelValues(s.region, s.shard)
+	}
+}
+
 func (s shardCapacity) encoded(envelopeBytes, bindings int) {
 	servingEnvelopeBytes.WithLabelValues(s.region, s.shard).Set(float64(envelopeBytes))
 	servingBindings.WithLabelValues(s.region, s.shard).Set(float64(bindings))

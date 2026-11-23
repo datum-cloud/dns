@@ -132,6 +132,15 @@ func fitSnapshot(snapshot model.ServingSnapshot, prior model.ServingSnapshot, ma
 	return snapshot, rejected, nil
 }
 
+// publishRefusals gives the reasons a fit error refuses the publish: none for an
+// error that is not a refusal.
+func publishRefusals(err error) []string {
+	if errors.Is(err, errEstablishedBindingDoesNotFit) {
+		return []string{refusedEstablishedBinding}
+	}
+	return nil
+}
+
 func encodedSize(r model.PublicationRequirement) int {
 	data, _ := json.Marshal(r)
 	return len(data)

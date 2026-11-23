@@ -3,7 +3,6 @@
 package platform
 
 import (
-	"errors"
 	"strings"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -86,11 +85,11 @@ func (s shardCapacity) refusedPublish(reason string) {
 	servingPublishRefusals.WithLabelValues(s.region, s.shard, reason).Inc()
 }
 
-func (s shardCapacity) fitted(rejected map[string]string, err error) {
+func (s shardCapacity) fitted(rejected map[string]string, publishRefusals []string) {
 	for _, reason := range rejected {
 		servingBindingRefusals.WithLabelValues(s.region, s.shard, reason).Inc()
 	}
-	if errors.Is(err, errEstablishedBindingDoesNotFit) {
-		s.refusedPublish(refusedEstablishedBinding)
+	for _, reason := range publishRefusals {
+		s.refusedPublish(reason)
 	}
 }

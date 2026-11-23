@@ -43,9 +43,12 @@ func init() {
 
 func regionalAddressRelease(allocator *platform.Allocator, dryRun bool) func(context.Context) error {
 	var last time.Time
+	var lastErr error
 	return func(ctx context.Context) error {
+		// A check between sweeps reports the last sweep's result, so a sweep
+		// that keeps failing still counts as failing.
 		if !last.IsZero() && time.Since(last) < regionalAddressReleaseInterval {
-			return nil
+			return lastErr
 		}
 		last = time.Now()
 		result, err := allocator.ReleaseRegionalAddresses(ctx, time.Now(), regionalAddressGrace, dryRun)
@@ -66,6 +69,7 @@ func regionalAddressRelease(allocator *platform.Allocator, dryRun bool) func(con
 		if result.Released > 0 || result.Restored > 0 || result.Conflicts > 0 {
 			ctrl.LoggerFrom(ctx).WithName("internal-dns").Info("regional address release sweep", "dryRun", dryRun, "inUse", result.InUse, "released", result.Released, "restored", result.Restored, "conflicts", result.Conflicts)
 		}
+		lastErr = err
 		return err
 	}
 }

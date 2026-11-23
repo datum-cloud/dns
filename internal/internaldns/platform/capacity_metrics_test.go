@@ -301,3 +301,33 @@ func TestPlannerCountsTheNewBindingsOfARefusedSnapshot(t *testing.T) {
 	}
 	requireBindingRefusals(t, shard, map[string]float64{"max_bindings": 1, "established_binding": 1})
 }
+
+func TestPlannerStopsExportingAShardAnotherProcessHolds(t *testing.T) {
+	ctx := context.Background()
+	shard := "held-elsewhere"
+	gauges := []string{"internal_dns_serving_envelope_bytes", "internal_dns_serving_envelope_budget_bytes", "internal_dns_serving_bindings", "internal_dns_serving_bindings_budget"}
+	p := capacityPlanner(t, PlannerConfig{Shard: shard}, shardBinding(shard, 1))
+	if err := p.Step(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range gauges {
+		requireShardMetric(t, name, shard)
+	}
+	var owner corev1.ConfigMap
+	if err := p.Client.Get(ctx, p.ownerKey(), &owner); err != nil {
+		t.Fatal(err)
+	}
+	state, _ := json.Marshal(shardState{Holder: "another-process", Epoch: 2, NextRevision: 2, LeaseUntil: p.Now().Add(time.Minute)})
+	owner.Data["state"] = string(state)
+	if err := p.Client.Update(ctx, &owner); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Step(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range gauges {
+		if got, ok := shardMetric(t, name, shard); ok {
+			t.Fatalf("shard %s is held by another process, and this one still exports %s %v", shard, name, got)
+		}
+	}
+}

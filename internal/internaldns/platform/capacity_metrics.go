@@ -1,0 +1,17 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
+package platform
+
+import (
+	"github.com/prometheus/client_golang/prometheus"
+	"sigs.k8s.io/controller-runtime/pkg/metrics"
+)
+
+var servingEnvelopeBytes = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+	Name: "internal_dns_serving_envelope_bytes",
+	Help: "Size of the serving envelope the planner last encoded for the shard.",
+}, []string{"region", "shard"})
+
+func init() {
+	metrics.Registry.MustRegister(servingEnvelopeBytes)
+}

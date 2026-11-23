@@ -314,6 +314,7 @@ func (p *Planner) Step(ctx context.Context) error {
 		return err
 	}
 	payload, _ := json.Marshal(env)
+	servingEnvelopeBytes.WithLabelValues(c.Region, c.Shard).Set(float64(len(payload)))
 	if len(payload) > maxBytes {
 		return fmt.Errorf("shard serving envelope exceeds configured transport budget: %d > %d", len(payload), maxBytes)
 	}

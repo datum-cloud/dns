@@ -4,6 +4,7 @@ package serving
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -61,7 +62,7 @@ func TestBindingFencesMoveAddressesOnlyWithANewerRevision(t *testing.T) {
 	}
 }
 
-func TestAFenceFromBeforePinnedIdentityAcceptsAMove(t *testing.T) {
+func TestAFenceFromBeforePinnedIdentityMovesOnlyOnceRecorded(t *testing.T) {
 	now := time.Now().UTC()
 	snapshot := testSnapshot(now)
 	b := snapshot.Bindings[0]
@@ -72,15 +73,44 @@ func TestAFenceFromBeforePinnedIdentityAcceptsAMove(t *testing.T) {
 	next.ConfigurationRevision++
 	moved := snapshot
 	moved.Bindings = []model.Binding{next}
-	fences, err := advanceBindingFences(map[string]bindingFence{b.BindingUID: legacy}, moved)
+	if _, err := advanceBindingFences(map[string]bindingFence{b.BindingUID: legacy}, moved); err == nil {
+		t.Fatal("a fence without its pinned identity let a binding move")
+	}
+	unchanged := snapshot
+	unchanged.Bindings = []model.Binding{b}
+	fences, err := advanceBindingFences(map[string]bindingFence{b.BindingUID: legacy}, unchanged)
 	if err != nil {
-		t.Fatalf("a move against a fence written before pinned identity was refused: %v", err)
+		t.Fatalf("an unchanged binding against an old fence was refused: %v", err)
 	}
 	if fences[b.BindingUID].Pinned == "" {
 		t.Fatal("the advanced fence did not record its pinned identity")
 	}
-	moved.Bindings[0] = b
-	if _, err := advanceBindingFences(map[string]bindingFence{b.BindingUID: legacy}, moved); err != nil {
-		t.Fatalf("an unchanged binding against an old fence was refused: %v", err)
+	if _, err := advanceBindingFences(fences, moved); err != nil {
+		t.Fatalf("a move after the pinned identity was recorded was refused: %v", err)
+	}
+}
+
+func TestACheckpointFromBeforePinnedIdentityLoads(t *testing.T) {
+	now := time.Now().UTC()
+	snapshot := testSnapshot(now)
+	store := stateStore{path: filepath.Join(t.TempDir(), "state.json")}
+	state := newCheckpoint()
+	state.Snapshot = &snapshot
+	for _, b := range snapshot.Bindings {
+		fence := bindingFenceFor(b)
+		fence.Pinned = ""
+		state.BindingFences[b.BindingUID] = fence
+	}
+	if err := store.Save(state); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := store.Load()
+	if err != nil {
+		t.Fatalf("a checkpoint written before pinned identity failed to load: %v", err)
+	}
+	for _, b := range snapshot.Bindings {
+		if loaded.BindingFences[b.BindingUID].Pinned != bindingPinnedIdentity(b) {
+			t.Fatalf("binding %s's pinned identity was not filled in from the snapshot", b.BindingUID)
+		}
 	}
 }

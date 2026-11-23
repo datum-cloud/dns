@@ -85,6 +85,10 @@ func (s stateStore) Load() (checkpoint, error) {
 	if state.Snapshot != nil {
 		for _, b := range state.Snapshot.Bindings {
 			f, ok := state.BindingFences[b.BindingUID]
+			if ok && f.Pinned == "" && f.Identity == bindingIdentity(b) {
+				f.Pinned = bindingPinnedIdentity(b)
+				state.BindingFences[b.BindingUID] = f
+			}
 			if !ok || !equalJSON(f, bindingFenceFor(b)) {
 				return state, fmt.Errorf("checkpoint binding %s does not match its authority history", b.BindingUID)
 			}

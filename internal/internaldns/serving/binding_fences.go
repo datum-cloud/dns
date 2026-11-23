@@ -13,8 +13,8 @@ type bindingFence struct {
 	Identity string `json:"identity"`
 	// Pinned is the part of Identity that may never change: the source and the
 	// listener port and transports. The addresses may move with a newer
-	// configuration revision. Fences written before it was recorded leave it
-	// empty.
+	// configuration revision. A fence written before it was recorded leaves it
+	// empty and allows no move until a snapshot records it.
 	Pinned                  string              `json:"pinned,omitempty"`
 	ConfigurationGeneration uint64              `json:"configurationGeneration"`
 	ConfigurationRevision   uint64              `json:"configurationRevision"`
@@ -58,7 +58,7 @@ func advanceBindingFences(prior map[string]bindingFence, snapshot model.ServingS
 	for _, b := range snapshot.Bindings {
 		candidate := bindingFenceFor(b)
 		if old, ok := prior[b.BindingUID]; ok {
-			if old.Pinned != "" && candidate.Pinned != old.Pinned {
+			if old.Pinned == "" && candidate.Identity != old.Identity || old.Pinned != "" && candidate.Pinned != old.Pinned {
 				return nil, fmt.Errorf("binding %s changed its UID-pinned source or listeners", b.BindingUID)
 			}
 			if candidate.Identity != old.Identity && candidate.ConfigurationRevision <= old.ConfigurationRevision {

@@ -13,9 +13,11 @@ import (
 // TestDNSRecordSetPolicy_PatchShapes evaluates the audit rules against the
 // request shapes that reach the activity processor, as the processor does: in
 // order, stopping at the first rule that matches or errors. An error sends the
-// event to the dead-letter queue, so it fails the test. The two JSON patches
-// are the shapes that failed in production on 2026-11-21. A dry run and a
-// refused request change nothing, so they are not an activity.
+// event to the dead-letter queue, so it fails the test. The first two JSON
+// patches are the shapes that failed in production on 2026-11-21. The third is
+// the record removal of issue 241, which failed on 2026-10-09 and must show as
+// a deleted record. A dry run and a refused request change nothing, so they
+// are not an activity.
 func TestDNSRecordSetPolicy_PatchShapes(t *testing.T) {
 	t.Parallel()
 	pol := loadDNSRecordSetPolicy(t)
@@ -27,6 +29,9 @@ func TestDNSRecordSetPolicy_PatchShapes(t *testing.T) {
 	added := `,"dns.networking.miloapis.com/activity-change":"added",` +
 		`"dns.networking.miloapis.com/activity-name":"ca-central-1.edge.datum.net",` +
 		`"dns.networking.miloapis.com/activity-value":"192.0.2.10"`
+	removed := `,"dns.networking.miloapis.com/activity-change":"removed",` +
+		`"dns.networking.miloapis.com/activity-name":"d123.datum.net",` +
+		`"dns.networking.miloapis.com/activity-value":"203.0.112.10"`
 	dryRun := func(audit map[string]any) { audit["requestURI"] = audit["requestURI"].(string) + "?dryRun=All" }
 	refused := func(audit map[string]any) {
 		audit["responseStatus"] = map[string]any{"code": 422}
@@ -46,6 +51,12 @@ func TestDNSRecordSetPolicy_PatchShapes(t *testing.T) {
 			name: "JSON patch that adds a record", verb: "patch", activity: added, wantRule: "update-activity-added-a-aaaa",
 			request: `[{"op":"test","path":"/metadata/resourceVersion","value":"1"},` +
 				`{"op":"add","path":"/spec/records/-","value":{"name":"ca-central-1.edge","a":{"content":"192.0.2.10"}}}]`,
+		},
+		{
+			name: "JSON patch that tests and removes a record, from issue 241", verb: "patch", activity: removed,
+			wantRule: "update-activity-removed-a-aaaa",
+			request: `[{"op":"test","path":"/spec/records/22","value":{"a":{"content":"203.0.112.10"},"name":"d123"}},` +
+				`{"op":"remove","path":"/spec/records/22"}]`,
 		},
 		{
 			name: "merge patch with a spec", verb: "patch", wantRule: "update-a-aaaa", request: mergePatchWithSpec,

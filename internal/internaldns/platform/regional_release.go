@@ -226,8 +226,6 @@ func (a *Allocator) ReleaseRegionalAddresses(ctx context.Context, now time.Time,
 			continue
 		}
 		if claim := claims[address]; claim != nil {
-			// The context's claim may carry its region or not, depending on
-			// which pool the address was allocated from.
 			if held := claim.Data[claimOwnerKey]; held != owner && !strings.HasPrefix(held, owner+"/") && !strings.HasPrefix(owner, held+"/") {
 				conflicted[address] = true
 			}

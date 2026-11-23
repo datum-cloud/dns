@@ -507,3 +507,34 @@ func TestRegionalReleaseRestoresNothingWithoutClaims(t *testing.T) {
 		t.Fatalf("a control plane that makes no claims restored one: %+v %v", result, claims)
 	}
 }
+
+func TestRegionalReleaseKnowsAContextsOwnClaimAcrossPools(t *testing.T) {
+	ctx := context.Background()
+	for name, tc := range map[string]struct {
+		holder    string
+		conflicts int
+	}{
+		"same context, recorded with its region": {"project-a/context-a/east", 0},
+		"another context":                        {"project-b/context-b/east", 1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cl := testClient(t)
+			// The binding's address is outside the region's own pool, so its
+			// owner is rebuilt without the region.
+			if err := cl.Create(ctx, regionalBinding("live", "context-a", "east", "fd70:200::7")); err != nil {
+				t.Fatal(err)
+			}
+			allocator := &Allocator{Client: cl, Namespace: "platform", ClusterPrefix: "fd70:200::/96", RegionalPrefixes: map[string]string{"east": "fd70:300::/96"}}
+			if err := allocator.restoreClaim(ctx, tc.holder, "fd70:200::7"); err != nil {
+				t.Fatal(err)
+			}
+			result, err := allocator.ReleaseRegionalAddresses(ctx, time.Now(), 10*time.Minute, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Conflicts != tc.conflicts {
+				t.Fatalf("conflicts = %d, want %d", result.Conflicts, tc.conflicts)
+			}
+		})
+	}
+}

@@ -504,9 +504,7 @@ func (a *Allocator) regionalClaim(owner, address string) *corev1.ConfigMap {
 	return &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "dns-address-claim-" + model.OpaqueToken(address), Namespace: a.Namespace, Labels: map[string]string{leaseLabel: "true"}}, Data: map[string]string{"owner": owner, "address": address}}
 }
 
-// dropLease deletes the owner's lease if it is still outside prefix, so the
-// next reservation starts afresh. A lease another replica already replaced
-// with one inside prefix is kept.
+// dropLease keeps a lease another replica already moved into prefix.
 func (a *Allocator) dropLease(ctx context.Context, owner string, prefix netip.Prefix) error {
 	var stored corev1.ConfigMap
 	err := a.Client.Get(ctx, client.ObjectKey{Namespace: a.Namespace, Name: "dns-address-owner-" + model.OpaqueToken(owner)}, &stored)

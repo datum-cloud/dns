@@ -12,6 +12,11 @@ var servingEnvelopeBytes = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 	Help: "Size of the serving envelope the planner last encoded for the shard.",
 }, []string{"region", "shard"})
 
+var servingEnvelopeBudgetBytes = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+	Name: "internal_dns_serving_envelope_budget_bytes",
+	Help: "The shard's maxSnapshotBytes: the planner publishes no serving envelope larger than this.",
+}, []string{"region", "shard"})
+
 func init() {
-	metrics.Registry.MustRegister(servingEnvelopeBytes)
+	metrics.Registry.MustRegister(servingEnvelopeBytes, servingEnvelopeBudgetBytes)
 }

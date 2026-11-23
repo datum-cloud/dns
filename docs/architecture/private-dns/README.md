@@ -359,6 +359,15 @@ Kubernetes API by default, or to JetStream KV when `publicationStore` is enabled
 Tenant resources, resolver bindings, address claims, and tenant status remain
 in the API server in both modes.
 
+Regional resolver address claims and their owner leases are freed by a sweep
+that runs every ten minutes, once no resolver binding carries the address (or
+only a tombstone every member has withdrawn) and no committed serving snapshot
+does. This is the rule service destination claims follow. A live binding whose
+claim is missing gets it back. By default the sweep only counts what it would
+free (`regionalAddressRelease: dryRun`, the
+`internal_dns_regional_address_claims{state="releasable"}` gauge). Set it to
+`enabled` to free them, or `disabled` to stop the sweep.
+
 In JetStream mode, zone publications live on one home broker, selected by
 `publicationStore.region`. Each region also keeps its serving state on its own
 broker. The diagram shows which stores the shared controllers use for each

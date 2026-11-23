@@ -145,3 +145,24 @@ func TestPlannerExportsTheServingEnvelopeSizeAtEachPublish(t *testing.T) {
 		t.Fatalf("envelope size %v after the next publish, the published envelope has %d bytes", got, second)
 	}
 }
+
+func TestPlannerExportsTheServingEnvelopeBudget(t *testing.T) {
+	for _, tc := range []struct {
+		shard      string
+		configured int
+		want       float64
+	}{
+		{shard: "envelope-budget", configured: 65536, want: 65536},
+		{shard: "envelope-budget-default", want: 512 * 1024},
+	} {
+		t.Run(tc.shard, func(t *testing.T) {
+			p := capacityPlanner(t, PlannerConfig{Shard: tc.shard, MaxSnapshotBytes: tc.configured}, shardBinding(tc.shard, 1))
+			if err := p.Step(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if got := requireShardMetric(t, "internal_dns_serving_envelope_budget_bytes", tc.shard); got != tc.want {
+				t.Fatalf("envelope budget %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

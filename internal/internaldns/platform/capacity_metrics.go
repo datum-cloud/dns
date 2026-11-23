@@ -9,35 +9,45 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/metrics"
 )
 
+const (
+	regionLabel = "region"
+	shardLabel  = "shard"
+)
+
+var (
+	shardLabels   = []string{regionLabel, shardLabel}
+	refusalLabels = []string{regionLabel, shardLabel, "reason"}
+)
+
 var servingEnvelopeBytes = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 	Name: "internal_dns_serving_envelope_bytes",
 	Help: "Size of the serving envelope the planner last encoded for the shard.",
-}, []string{"region", "shard"})
+}, shardLabels)
 
 var servingEnvelopeBudgetBytes = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 	Name: "internal_dns_serving_envelope_budget_bytes",
 	Help: "The shard's maxSnapshotBytes: the planner publishes no serving envelope larger than this.",
-}, []string{"region", "shard"})
+}, shardLabels)
 
 var servingBindings = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 	Name: "internal_dns_serving_bindings",
 	Help: "Bindings in the serving snapshot the planner last encoded for the shard, withdrawals included, as maxBindings counts them.",
-}, []string{"region", "shard"})
+}, shardLabels)
 
 var servingBindingsBudget = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 	Name: "internal_dns_serving_bindings_budget",
 	Help: "The shard's maxBindings: the planner places no more bindings than this in its serving snapshot.",
-}, []string{"region", "shard"})
+}, shardLabels)
 
 var servingPublishRefusals = prometheus.NewCounterVec(prometheus.CounterOpts{
 	Name: "internal_dns_serving_publish_refusals_total",
 	Help: "Planner passes that published no serving snapshot for the shard, by reason: max_snapshot_bytes when the envelope is over its budget, established_binding when a binding the shard serves no longer fits. The planner retries at each pass, so a refusal that lasts counts at each pass.",
-}, []string{"region", "shard", "reason"})
+}, refusalLabels)
 
 var servingBindingRefusals = prometheus.NewCounterVec(prometheus.CounterOpts{
 	Name: "internal_dns_serving_binding_refusals_total",
 	Help: "Bindings the planner left out of the shard's serving snapshot, by reason: max_bindings, max_snapshot_bytes, or established_binding when the whole snapshot is refused. Each pass counts each binding it leaves out, so a refusal that lasts counts at each pass.",
-}, []string{"region", "shard", "reason"})
+}, refusalLabels)
 
 func init() {
 	metrics.Registry.MustRegister(servingEnvelopeBytes, servingEnvelopeBudgetBytes, servingBindings, servingBindingsBudget, servingPublishRefusals, servingBindingRefusals)

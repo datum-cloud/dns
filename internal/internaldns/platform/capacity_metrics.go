@@ -9,11 +9,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/metrics"
 )
 
-const (
-	refusedMaxSnapshotBytes   = "max_snapshot_bytes"
-	refusedEstablishedBinding = "established_binding"
-)
-
 var servingEnvelopeBytes = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 	Name: "internal_dns_serving_envelope_bytes",
 	Help: "Size of the serving envelope the planner last encoded for the shard.",
@@ -39,8 +34,13 @@ var servingPublishRefusals = prometheus.NewCounterVec(prometheus.CounterOpts{
 	Help: "Planner passes that published no serving snapshot for the shard, by reason: max_snapshot_bytes when the envelope is over its budget, established_binding when a binding the shard serves no longer fits. The planner retries at each pass, so a refusal that lasts counts at each pass.",
 }, []string{"region", "shard", "reason"})
 
+var servingBindingRefusals = prometheus.NewCounterVec(prometheus.CounterOpts{
+	Name: "internal_dns_serving_binding_refusals_total",
+	Help: "Bindings the planner left out of the shard's serving snapshot, by reason: max_bindings, max_snapshot_bytes, or established_binding when the whole snapshot is refused. Each pass counts each binding it leaves out, so a refusal that lasts counts at each pass.",
+}, []string{"region", "shard", "reason"})
+
 func init() {
-	metrics.Registry.MustRegister(servingEnvelopeBytes, servingEnvelopeBudgetBytes, servingBindings, servingBindingsBudget, servingPublishRefusals)
+	metrics.Registry.MustRegister(servingEnvelopeBytes, servingEnvelopeBudgetBytes, servingBindings, servingBindingsBudget, servingPublishRefusals, servingBindingRefusals)
 }
 
 type shardCapacity struct{ region, shard string }
@@ -53,6 +53,9 @@ func (s shardCapacity) budgets(maxBindings, maxBytes int) {
 	for _, reason := range []string{refusedMaxSnapshotBytes, refusedEstablishedBinding} {
 		servingPublishRefusals.WithLabelValues(s.region, s.shard, reason)
 	}
+	for _, reason := range []string{refusedMaxBindings, refusedMaxSnapshotBytes, refusedEstablishedBinding} {
+		servingBindingRefusals.WithLabelValues(s.region, s.shard, reason)
+	}
 }
 
 func (s shardCapacity) encoded(envelopeBytes, bindings int) {
@@ -64,7 +67,10 @@ func (s shardCapacity) refusedPublish(reason string) {
 	servingPublishRefusals.WithLabelValues(s.region, s.shard, reason).Inc()
 }
 
-func (s shardCapacity) refusedFit(err error) {
+func (s shardCapacity) fitted(rejected map[string]string, err error) {
+	for _, reason := range rejected {
+		servingBindingRefusals.WithLabelValues(s.region, s.shard, reason).Inc()
+	}
 	if errors.Is(err, errEstablishedBindingDoesNotFit) {
 		s.refusedPublish(refusedEstablishedBinding)
 	}

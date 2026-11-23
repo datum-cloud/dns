@@ -269,11 +269,11 @@ func (p *Planner) Step(ctx context.Context) error {
 	maxBindings, maxBytes := c.budgets()
 	capacity := shardCapacity{region: c.Region, shard: c.Shard}
 	capacity.budgets(maxBindings, maxBytes)
-	var rejected map[string]bool
+	var rejected map[string]string
 	var fitErr error
 	snapshot, rejected, fitErr = fitSnapshot(snapshot, prior, maxBindings, maxBytes)
+	capacity.fitted(rejected, fitErr)
 	if fitErr != nil {
-		capacity.refusedFit(fitErr)
 		if err := p.reportCapacity(ctx, bindings.Items, rejected, now); err != nil {
 			log.FromContext(ctx).Error(err, "report shard capacity")
 		}

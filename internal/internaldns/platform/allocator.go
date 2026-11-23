@@ -76,7 +76,7 @@ func (a *Allocator) Allocate(ctx context.Context, projectUID, contextUID types.U
 	// context gets an address in the new range; its old claim is freed by the
 	// release sweep once nothing routes it.
 	if address, parseErr := netip.ParseAddr(lease.ClusterAddress); parseErr != nil || !prefix.Contains(address.Unmap()) {
-		if err := a.dropLease(ctx, owner); err != nil {
+		if err := a.dropLease(ctx, owner, prefix); err != nil {
 			return "", err
 		}
 		if lease, err = a.reserve(ctx, string(projectUID), string(contextUID), owner, prefix); err != nil {
@@ -477,11 +477,15 @@ func (a *Allocator) stamp(ctx context.Context, obj *corev1.ConfigMap) error {
 	return a.Client.Patch(ctx, obj, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{}))
 }
 
-// Reclaim keeps a revived binding on its previous address when its claim is
-// still the context's, or can be taken back, and allocates again only when
-// another context now holds it.
+// Reclaim keeps a revived binding on its previous address when the address is
+// in the region's current range and its claim is still the context's, or can
+// be taken back, and allocates again otherwise.
 func (a *Allocator) Reclaim(ctx context.Context, projectUID, contextUID types.UID, region, address string) (string, error) {
-	if parsed, err := netip.ParseAddr(address); err == nil {
+	prefix, err := a.prefixFor(region)
+	if err != nil {
+		return "", err
+	}
+	if parsed, err := netip.ParseAddr(address); err == nil && prefix.Contains(parsed.Unmap()) {
 		address = parsed.Unmap().String()
 		owner := string(projectUID) + "/" + string(contextUID)
 		if prefix, own := a.RegionalPrefixes[region]; own {
@@ -500,14 +504,21 @@ func (a *Allocator) regionalClaim(owner, address string) *corev1.ConfigMap {
 	return &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "dns-address-claim-" + model.OpaqueToken(address), Namespace: a.Namespace, Labels: map[string]string{leaseLabel: "true"}}, Data: map[string]string{"owner": owner, "address": address}}
 }
 
-// dropLease deletes the owner's lease so the next reservation starts afresh.
-func (a *Allocator) dropLease(ctx context.Context, owner string) error {
+// dropLease deletes the owner's lease if it is still outside prefix, so the
+// next reservation starts afresh. A lease another replica already replaced
+// with one inside prefix is kept.
+func (a *Allocator) dropLease(ctx context.Context, owner string, prefix netip.Prefix) error {
 	var stored corev1.ConfigMap
 	err := a.Client.Get(ctx, client.ObjectKey{Namespace: a.Namespace, Name: "dns-address-owner-" + model.OpaqueToken(owner)}, &stored)
 	if apierrors.IsNotFound(err) {
 		return nil
 	} else if err != nil {
 		return err
+	}
+	if lease, err := decodeLease(stored, owner); err == nil {
+		if address, err := netip.ParseAddr(lease.ClusterAddress); err == nil && prefix.Contains(address.Unmap()) {
+			return nil
+		}
 	}
 	return a.deleteClaim(ctx, &stored)
 }

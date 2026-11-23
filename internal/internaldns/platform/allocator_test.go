@@ -495,3 +495,25 @@ func TestAllocationMovesAContextOffAReplacedRange(t *testing.T) {
 		})
 	}
 }
+
+func TestDropLeaseKeepsALeaseAlreadyInTheRange(t *testing.T) {
+	ctx := context.Background()
+	cl := testClient(t)
+	allocator := &Allocator{Client: cl, Namespace: "platform", ClusterPrefix: "fd70:202::/96"}
+	address, err := allocator.Allocate(ctx, "project", "context", "east")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool, _ := allocator.prefixFor("east")
+	// Another replica already moved the lease into the current range.
+	if err := allocator.dropLease(ctx, "project/context", pool); err != nil {
+		t.Fatal(err)
+	}
+	if again, err := allocator.Allocate(ctx, "project", "context", "east"); err != nil || again != address {
+		t.Fatalf("a lease already in the range was dropped: %s %v", again, err)
+	}
+	var lease corev1.ConfigMap
+	if err := cl.Get(ctx, client.ObjectKey{Namespace: "platform", Name: "dns-address-owner-" + model.OpaqueToken("project/context")}, &lease); err != nil {
+		t.Fatalf("the lease was deleted: %v", err)
+	}
+}

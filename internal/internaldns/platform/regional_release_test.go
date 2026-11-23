@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/netip"
 	"strings"
 	"testing"
 	"time"
@@ -369,23 +370,42 @@ func TestRegionalReleaseLosesToAReuseBetweenItsDeletes(t *testing.T) {
 func TestReclaimKeepsAnAddressStillHeldOrFree(t *testing.T) {
 	ctx := context.Background()
 	cl := testClient(t)
+	allocator := &Allocator{Client: cl, Namespace: "platform", ClusterPrefix: "fd70:200::/96"}
+	address, err := allocator.Allocate(ctx, "project-a", "context-a", "east")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := allocator.Reclaim(ctx, "project-a", "context-a", "east", address); err != nil || got != address {
+		t.Fatalf("a revived binding moved off an address it still holds: %s %v", got, err)
+	}
+	if err := cl.Delete(ctx, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: "platform", Name: regionalClaimPrefix + model.OpaqueToken(address)}}); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := allocator.Reclaim(ctx, "project-a", "context-a", "east", address); err != nil || got != address {
+		t.Fatalf("a freed address was not taken back: %s %v", got, err)
+	}
+	if got, err := allocator.Reclaim(ctx, "project-b", "context-b", "east", address); err != nil || got == address {
+		t.Fatalf("another context's address was reclaimed: %s %v", got, err)
+	}
+}
+
+func TestReclaimMovesOffARegionsOldRange(t *testing.T) {
+	ctx := context.Background()
+	cl := testClient(t)
 	shared := &Allocator{Client: cl, Namespace: "platform", ClusterPrefix: "fd70:200::/96"}
 	address, err := shared.Allocate(ctx, "project-a", "context-a", "east")
 	if err != nil {
 		t.Fatal(err)
 	}
-	own := &Allocator{Client: cl, Namespace: "platform", ClusterPrefix: "fd70:200::/96", RegionalPrefixes: map[string]string{"east": "fd70:300::/96"}}
-	if got, err := own.Reclaim(ctx, "project-a", "context-a", "east", address); err != nil || got != address {
-		t.Fatalf("a region given its own pool later moved a revived binding: %s %v", got, err)
-	}
-	if err := cl.Delete(ctx, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: "platform", Name: regionalClaimPrefix + model.OpaqueToken(address)}}); err != nil {
-		t.Fatal(err)
-	}
-	if got, err := own.Reclaim(ctx, "project-a", "context-a", "east", address); err != nil || got != address {
-		t.Fatalf("a freed address was not taken back: %s %v", got, err)
-	}
-	if got, err := own.Reclaim(ctx, "project-b", "context-b", "east", address); err != nil || got == address {
-		t.Fatalf("another context's address was reclaimed: %s %v", got, err)
+	for name, changed := range map[string]*Allocator{
+		"shared pool moved":    {Client: cl, Namespace: "platform", ClusterPrefix: "fd70:202::/96"},
+		"region given its own": {Client: cl, Namespace: "platform", ClusterPrefix: "fd70:200::/96", RegionalPrefixes: map[string]string{"east": "fd70:300::/96"}},
+	} {
+		pool, _ := changed.prefixFor("east")
+		got, err := changed.Reclaim(ctx, "project-a", "context-a", "east", address)
+		if err != nil || !pool.Contains(netip.MustParseAddr(got)) {
+			t.Fatalf("%s: a revived binding kept an address outside the range: %s %v", name, got, err)
+		}
 	}
 }
 

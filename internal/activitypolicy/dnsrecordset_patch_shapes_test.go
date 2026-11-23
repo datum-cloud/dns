@@ -14,10 +14,10 @@ import (
 // request shapes that reach the activity processor, as the processor does: in
 // order, stopping at the first rule that matches or errors. An error sends the
 // event to the dead-letter queue, so it fails the test. The first two JSON
-// patches are the shapes that failed in production on 2026-11-21. The third is
-// the record removal of issue 241, which failed on 2026-10-09 and must show as
-// a deleted record. A dry run and a refused request change nothing, so they
-// are not an activity.
+// patches are the shapes that failed in production on 2026-11-21. The next
+// three are the record removals of issue 241, from an A, a CNAME and a TXT
+// record set, which failed on 2026-10-09 and must show as deleted records. A
+// dry run and a refused request change nothing, so they are not an activity.
 func TestDNSRecordSetPolicy_PatchShapes(t *testing.T) {
 	t.Parallel()
 	pol := loadDNSRecordSetPolicy(t)
@@ -32,6 +32,12 @@ func TestDNSRecordSetPolicy_PatchShapes(t *testing.T) {
 	removed := `,"dns.networking.miloapis.com/activity-change":"removed",` +
 		`"dns.networking.miloapis.com/activity-name":"d123.datum.net",` +
 		`"dns.networking.miloapis.com/activity-value":"203.0.112.10"`
+	// The update rules read the record type from the response.
+	ofType := func(recordType string) func(audit map[string]any) {
+		return func(audit map[string]any) {
+			audit["responseObject"].(map[string]any)["spec"].(map[string]any)["recordType"] = recordType
+		}
+	}
 	dryRun := func(audit map[string]any) { audit["requestURI"] = audit["requestURI"].(string) + "?dryRun=All" }
 	refused := func(audit map[string]any) {
 		audit["responseStatus"] = map[string]any{"code": 422}
@@ -57,6 +63,18 @@ func TestDNSRecordSetPolicy_PatchShapes(t *testing.T) {
 			wantRule: "update-activity-removed-a-aaaa",
 			request: `[{"op":"test","path":"/spec/records/22","value":{"a":{"content":"203.0.112.10"},"name":"d123"}},` +
 				`{"op":"remove","path":"/spec/records/22"}]`,
+		},
+		{
+			name: "JSON patch that tests and removes a CNAME record, from issue 241", verb: "patch", activity: removed,
+			change: ofType("CNAME"), wantRule: "update-activity-removed-cname",
+			request: `[{"op":"test","path":"/spec/records/4","value":{"cname":{"content":"edge.datum.net"},"name":"d123"}},` +
+				`{"op":"remove","path":"/spec/records/4"}]`,
+		},
+		{
+			name: "JSON patch that tests and removes a TXT record, from issue 241", verb: "patch", activity: removed,
+			change: ofType("TXT"), wantRule: "update-activity-removed-txt",
+			request: `[{"op":"test","path":"/spec/records/7","value":{"txt":{"content":"v=spf1 -all"},"name":"d123"}},` +
+				`{"op":"remove","path":"/spec/records/7"}]`,
 		},
 		{
 			name: "merge patch with a spec", verb: "patch", wantRule: "update-a-aaaa", request: mergePatchWithSpec,

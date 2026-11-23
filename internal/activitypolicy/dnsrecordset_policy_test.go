@@ -235,7 +235,8 @@ func TestDNSRecordSetPolicy_CELMatchFixtures(t *testing.T) {
 		"dns.networking.miloapis.com/display-value": "\"v=DMARC1; p=none\"",
 	}
 
-	fixtures := []fixture{
+	fixtures := make([]fixture, 0, 11)
+	fixtures = append(fixtures, []fixture{
 		{
 			name:     "human create TXT with annotations",
 			wantRule: "create-txt",
@@ -390,7 +391,7 @@ func TestDNSRecordSetPolicy_CELMatchFixtures(t *testing.T) {
 				},
 			},
 		},
-	}
+	}...)
 
 	fixtures = append(fixtures,
 		fixture{

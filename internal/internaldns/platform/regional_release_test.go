@@ -472,3 +472,18 @@ func TestRegionalReleaseCountsOnlyWhatItFrees(t *testing.T) {
 		t.Fatalf("a claim another replica freed was counted: %+v", result)
 	}
 }
+
+func TestRegionalReleaseRestoresNothingWithoutClaims(t *testing.T) {
+	ctx := context.Background()
+	cl := testClient(t)
+	if err := cl.Create(ctx, regionalBinding("live", "context-a", "east", "fd54::7")); err != nil {
+		t.Fatal(err)
+	}
+	result, err := (&Allocator{Client: cl, Namespace: "platform", NoClaims: true}).ReleaseRegionalAddresses(ctx, time.Now(), 10*time.Minute, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claims, _ := regionalState(t, cl); result.Restored != 0 || len(claims) != 0 {
+		t.Fatalf("a control plane that makes no claims restored one: %+v %v", result, claims)
+	}
+}

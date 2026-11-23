@@ -124,6 +124,11 @@ type Config struct {
 	// address claims nothing routes any more: "dryRun" (the default), which
 	// only counts and logs what it would free, "enabled", or "disabled".
 	RegionalAddressRelease string `json:"regionalAddressRelease,omitempty"`
+	// RequireSuppliedAddresses is for an integration that assigns every
+	// access binding's regional address itself. The allocator is not used,
+	// no address claims are made, and an access binding without
+	// regionalAddress is refused.
+	RequireSuppliedAddresses bool `json:"requireSuppliedAddresses,omitempty"`
 }
 
 const (

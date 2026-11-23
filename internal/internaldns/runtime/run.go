@@ -182,7 +182,7 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 		}
 		return publicationStore.View(model.SafeToken(region))
 	}
-	allocator := &platform.Allocator{Client: platformClient, Namespace: cfg.PlatformNamespace, ClusterPrefix: cfg.ClusterPrefix, RegionalPrefixes: regionalPrefixes, RegionClient: regionalClient, Regions: cfg.Regions}
+	allocator := &platform.Allocator{Client: platformClient, Namespace: cfg.PlatformNamespace, ClusterPrefix: cfg.ClusterPrefix, RegionalPrefixes: regionalPrefixes, RegionClient: regionalClient, Regions: cfg.Regions, NoClaims: cfg.RequireSuppliedAddresses}
 	// Every region's shards keep contexts on one assignment; this control
 	// plane runs only the planners of the regions it publishes.
 	regions := make([]controlplane.ServingRegion, 0, len(cfg.plannerConfigs()))
@@ -245,9 +245,10 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 				},
 				ProjectNamespace: project.Namespace, PlatformNamespace: cfg.PlatformNamespace,
 				Region: cfg.Region, Shard: cfg.Shard, Identity: identity,
-				LeaseDuration:        cfg.ownershipLease(),
-				AddressAllocator:     allocator,
-				PrivateZoneClassName: cfg.PrivateZoneClassName, ServingRegions: regions, Regions: cfg.Regions,
+				LeaseDuration:            cfg.ownershipLease(),
+				AddressAllocator:         allocator,
+				RequireSuppliedAddresses: cfg.RequireSuppliedAddresses,
+				PrivateZoneClassName:     cfg.PrivateZoneClassName, ServingRegions: regions, Regions: cfg.Regions,
 				LocalInputs:           cfg.ProjectDiscovery != nil && cfg.ProjectDiscovery.Local,
 				ManagedDomainSuffixes: cfg.ManagedDomainSuffixes,
 				PerZoneReconcile:      cfg.PerZoneReconcile,

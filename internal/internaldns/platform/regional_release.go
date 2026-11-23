@@ -178,6 +178,9 @@ func (a *Allocator) ReleaseRegionalAddresses(ctx context.Context, now time.Time,
 			continue
 		}
 		if inUse {
+			if a.NoClaims {
+				continue
+			}
 			if !dryRun {
 				if err := a.restoreClaim(ctx, owner, address); err != nil {
 					errs = errors.Join(errs, err)
@@ -209,7 +212,7 @@ func (a *Allocator) ReleaseRegionalAddresses(ctx context.Context, now time.Time,
 		b := &bindings.Items[i]
 		region := b.Spec.Placement.Region
 		address, ok := normalAddress(b.Spec.Configuration.Query.RegionalAddress)
-		if !ok || b.Spec.Tombstone || !b.DeletionTimestamp.IsZero() || !a.releasesRegion(region) || b.Spec.Source.ProjectUID == "" || b.Spec.Source.ResolverContextRef.UID == "" {
+		if a.NoClaims || !ok || b.Spec.Tombstone || !b.DeletionTimestamp.IsZero() || !a.releasesRegion(region) || b.Spec.Source.ProjectUID == "" || b.Spec.Source.ResolverContextRef.UID == "" {
 			continue
 		}
 		owner := string(b.Spec.Source.ProjectUID) + "/" + string(b.Spec.Source.ResolverContextRef.UID)

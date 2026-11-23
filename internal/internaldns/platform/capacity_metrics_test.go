@@ -166,3 +166,16 @@ func TestPlannerExportsTheServingEnvelopeBudget(t *testing.T) {
 		})
 	}
 }
+
+func TestPlannerExportsTheServingBindingCount(t *testing.T) {
+	shard := "binding-count"
+	withdrawn := shardBinding(shard, 3)
+	withdrawn.Spec.Tombstone = true
+	p := capacityPlanner(t, PlannerConfig{Shard: shard}, shardBinding(shard, 1), shardBinding(shard, 2), withdrawn)
+	if err := p.Step(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := requireShardMetric(t, "internal_dns_serving_bindings", shard); got != 3 {
+		t.Fatalf("binding count %v, want 3: two bindings and a withdrawal, each a place under maxBindings", got)
+	}
+}

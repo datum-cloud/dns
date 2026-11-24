@@ -21,7 +21,7 @@ type DNSResolverBindingSpec struct {
 	Tombstone     bool                            `json:"tombstone,omitempty"`
 }
 
-// +kubebuilder:validation:XValidation:rule="oldSelf == self",message="binding source identity is immutable"
+// +kubebuilder:validation:XValidation:rule="oldSelf.projectUID == self.projectUID && oldSelf.resolverContextRef == self.resolverContextRef && oldSelf.accessBindingRef.name == self.accessBindingRef.name && oldSelf.accessBindingRef.uid == self.accessBindingRef.uid",message="binding source identity is immutable"
 // +kubebuilder:validation:XValidation:rule="self.projectUID.size() > 0 && self.resolverContextRef.name.size() > 0 && has(self.resolverContextRef.uid) && self.resolverContextRef.uid.size() > 0 && self.accessBindingRef.name.size() > 0 && has(self.accessBindingRef.uid) && self.accessBindingRef.uid.size() > 0",message="binding source requires project UID and UID-pinned context and access references"
 type DNSResolverBindingSource struct {
 	// +kubebuilder:validation:Type=string
@@ -42,6 +42,7 @@ type DNSResolverBindingPlacement struct {
 }
 
 // +kubebuilder:validation:XValidation:rule="self.zoneRefs.all(z, z.name.size() > 0 && has(z.uid) && z.uid.size() > 0)",message="zone references must pin name and UID"
+// +kubebuilder:validation:XValidation:rule="oldSelf.query == self.query || self.revision > oldSelf.revision",message="query destinations change only with a newer configuration revision"
 type DNSResolverBindingConfiguration struct {
 	// +kubebuilder:validation:Minimum=1
 	Generation int64 `json:"generation"`
@@ -55,7 +56,6 @@ type DNSResolverBindingConfiguration struct {
 	ZoneApices map[string]string `json:"zoneApices,omitempty"`
 }
 
-// +kubebuilder:validation:XValidation:rule="oldSelf == self",message="query destinations are immutable for an access binding"
 type DNSResolverBindingQuery struct {
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253

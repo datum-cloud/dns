@@ -463,3 +463,64 @@ func TestRegionalAllocatorReleasesOnlyItsRegionsClaims(t *testing.T) {
 		t.Fatal("another region's claim was released by this region's control plane")
 	}
 }
+
+func TestAllocationMovesAContextOffAReplacedRange(t *testing.T) {
+	ctx := context.Background()
+	cl := testClient(t)
+	for _, tc := range []struct {
+		name     string
+		old, new Allocator
+	}{
+		{"shared pool", Allocator{Client: cl, Namespace: "platform", ClusterPrefix: "fd70:200::/96"}, Allocator{Client: cl, Namespace: "platform", ClusterPrefix: "fd70:202::/96"}},
+		{"own pool", Allocator{Client: cl, Namespace: "platform", RegionalPrefixes: map[string]string{"east": "fd70:300::/96"}}, Allocator{Client: cl, Namespace: "platform", RegionalPrefixes: map[string]string{"east": "fd70:302::/96"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			contextUID := types.UID("context-" + strings.ReplaceAll(tc.name, " ", "-"))
+			before, err := tc.old.Allocate(ctx, "project", contextUID, "east")
+			if err != nil {
+				t.Fatal(err)
+			}
+			after, err := tc.new.Allocate(ctx, "project", contextUID, "east")
+			if err != nil {
+				t.Fatalf("allocating after the range changed failed: %v", err)
+			}
+			pool, _ := tc.new.prefixFor("east")
+			if after == before || !pool.Contains(netip.MustParseAddr(after)) {
+				t.Fatalf("got %s after the range changed from %s, want an address in %s", after, before, pool)
+			}
+			again, err := tc.new.Allocate(ctx, "project", contextUID, "east")
+			if err != nil || again != after {
+				t.Fatalf("the new lease was not kept: %s %v", again, err)
+			}
+		})
+	}
+}
+
+func TestDropLeaseKeepsALeaseAlreadyInTheRange(t *testing.T) {
+	ctx := context.Background()
+	cl := testClient(t)
+	allocator := &Allocator{Client: cl, Namespace: "platform", ClusterPrefix: "fd70:202::/96"}
+	if _, err := allocator.Allocate(ctx, "project", "context", "east"); err != nil {
+		t.Fatal(err)
+	}
+	key := client.ObjectKey{Namespace: "platform", Name: "dns-address-owner-" + model.OpaqueToken("project/context")}
+	var before corev1.ConfigMap
+	if err := cl.Get(ctx, key, &before); err != nil {
+		t.Fatal(err)
+	}
+	pool, _ := allocator.prefixFor("east")
+	if err := allocator.dropLease(ctx, "project/context", pool); err != nil {
+		t.Fatal(err)
+	}
+	var after corev1.ConfigMap
+	if err := cl.Get(ctx, key, &after); err != nil || after.ResourceVersion != before.ResourceVersion {
+		t.Fatalf("a lease already in the range was dropped: %v", err)
+	}
+	old, _ := ParseRegionalPrefix("fd70:200::/96")
+	if err := allocator.dropLease(ctx, "project/context", old); err != nil {
+		t.Fatal(err)
+	}
+	if err := cl.Get(ctx, key, &after); !apierrors.IsNotFound(err) {
+		t.Fatalf("a lease outside the range was kept: %v", err)
+	}
+}

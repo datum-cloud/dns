@@ -226,7 +226,7 @@ func (a *Allocator) ReleaseRegionalAddresses(ctx context.Context, now time.Time,
 			continue
 		}
 		if claim := claims[address]; claim != nil {
-			if claim.Data[claimOwnerKey] != owner {
+			if held := claim.Data[claimOwnerKey]; held != owner && !strings.HasPrefix(held, owner+"/") && !strings.HasPrefix(owner, held+"/") {
 				conflicted[address] = true
 			}
 			continue

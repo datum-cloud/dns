@@ -4,6 +4,7 @@ package v1alpha1
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -41,12 +42,17 @@ func validateResolverBindingMoves(t *testing.T, cl client.Client) {
 		}, true},
 		"regional address at the same revision": {func(s *DNSResolverBindingSpec) { s.Configuration.Query.RegionalAddress = "fd70:202::1:0:5" }, false},
 		"a newer access generation":             {func(s *DNSResolverBindingSpec) { s.Source.AccessBindingRef.Generation = 2 }, true},
-		"another access":                        {func(s *DNSResolverBindingSpec) { s.Source.AccessBindingRef.UID = "other-access" }, false},
-		"another context":                       {func(s *DNSResolverBindingSpec) { s.Source.ResolverContextRef.UID = "other-context" }, false},
-		"another project":                       {func(s *DNSResolverBindingSpec) { s.Source.ProjectUID = "other-project" }, false},
+		"a newer access generation that moves the regional address": {func(s *DNSResolverBindingSpec) {
+			s.Source.AccessBindingRef.Generation = 2
+			s.Configuration.Query.RegionalAddress = "fd70:202::1:0:5"
+			s.Configuration.Revision++
+		}, true},
+		"another access":  {func(s *DNSResolverBindingSpec) { s.Source.AccessBindingRef.UID = "other-access" }, false},
+		"another context": {func(s *DNSResolverBindingSpec) { s.Source.ResolverContextRef.UID = "other-context" }, false},
+		"another project": {func(s *DNSResolverBindingSpec) { s.Source.ProjectUID = "other-project" }, false},
 	} {
 		t.Run("binding-move-"+name, func(t *testing.T) {
-			err := update(t, "move-"+metav1.Now().Format("150405.000000000"), tc.mutate)
+			err := update(t, "move-"+strings.ReplaceAll(name, " ", "-"), tc.mutate)
 			if tc.ok && err != nil {
 				t.Fatalf("a valid change was refused: %v", err)
 			}

@@ -49,6 +49,7 @@ func TestPrivateDNSValidationAtAPIServer(t *testing.T) {
 		t.Fatal(err)
 	}
 	validateResolverContextBoundaries(t, cl)
+	validateResolverBindingMoves(t, cl)
 	validateManagedNamespaceSuffix(t, cl)
 	requireInvalid := func(t *testing.T, err error) {
 		t.Helper()

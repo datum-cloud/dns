@@ -201,7 +201,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		}
 		wait.Stop()
 	}
-	return r.reconcileProject(ctx, ns)
+	return r.reconcileProject(withListedBindings(ctx), ns)
 }
 
 func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {

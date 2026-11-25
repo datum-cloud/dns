@@ -143,7 +143,7 @@ func associatedWithContext(assocs []dnsv1alpha1.DNSZoneAssociation, pins map[typ
 func (r *Reconciler) reconcileResolverContexts(ctx context.Context, ns string, now time.Time) error {
 	var contexts dnsv1alpha1.DNSResolverContextList
 	var existing dnsv1alpha1.DNSResolverBindingList
-	if err := r.listProjectBindings(ctx, &existing); err != nil {
+	if err := r.listPassBindings(ctx, &existing); err != nil {
 		return err
 	}
 	if err := r.List(ctx, &contexts, client.InNamespace(ns)); err != nil {
@@ -425,7 +425,7 @@ func (r *Reconciler) reconcileContextBindings(ctx context.Context, ns string, as
 	if err := r.List(ctx, &accesses, client.InNamespace(ns)); err != nil {
 		return err
 	}
-	if err := r.listProjectBindings(ctx, &existing); err != nil {
+	if err := r.listPassBindings(ctx, &existing); err != nil {
 		return err
 	}
 	zonesByContext := map[types.UID][]types.UID{}
@@ -1347,7 +1347,6 @@ func (r *Reconciler) labelProjectBindings(ctx context.Context, list *dnsv1alpha1
 		if b.Spec.Source.ProjectUID != r.Options.ProjectUID {
 			continue
 		}
-		list.Items = append(list.Items, *b)
 		base := b.DeepCopy()
 		if b.Labels == nil {
 			b.Labels = map[string]string{}
@@ -1356,12 +1355,42 @@ func (r *Reconciler) labelProjectBindings(ctx context.Context, list *dnsv1alpha1
 		if err := r.Patch(ctx, b, client.MergeFrom(base)); err != nil && !apierrors.IsNotFound(err) {
 			failed = append(failed, err)
 		}
+		list.Items = append(list.Items, *b)
 	}
 	if len(failed) > 0 {
 		ctrl.LoggerFrom(ctx).Error(errors.Join(failed...), "label resolver bindings with their project")
 		return nil
 	}
 	r.bindingsLabelled.Store(true)
+	return nil
+}
+
+// listedBindings hands the bindings the contexts phase lists to the bindings
+// phase of the same pass. Nothing between the two phases writes a binding.
+type listedBindings struct {
+	list *dnsv1alpha1.DNSResolverBindingList
+}
+
+type listedBindingsKey struct{}
+
+func withListedBindings(ctx context.Context) context.Context {
+	return context.WithValue(ctx, listedBindingsKey{}, &listedBindings{})
+}
+
+// listPassBindings lists the project's bindings once a pass, and on each call
+// outside a pass.
+func (r *Reconciler) listPassBindings(ctx context.Context, list *dnsv1alpha1.DNSResolverBindingList) error {
+	listed, _ := ctx.Value(listedBindingsKey{}).(*listedBindings)
+	if listed != nil && listed.list != nil {
+		listed.list.DeepCopyInto(list)
+		return nil
+	}
+	if err := r.listProjectBindings(ctx, list); err != nil {
+		return err
+	}
+	if listed != nil {
+		listed.list = list.DeepCopy()
+	}
 	return nil
 }
 

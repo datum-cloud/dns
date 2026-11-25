@@ -11,6 +11,7 @@ import (
 	dnsv1alpha1 "go.miloapis.com/dns/api/v1alpha1"
 	"go.miloapis.com/dns/internal/internaldns/model"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -221,5 +222,38 @@ func TestPerZoneProjectPassQueuesOnlyChangedZones(t *testing.T) {
 	h.run(projectQueueKey)
 	if n := len(h.r.zoneQueue); n != 1 {
 		t.Fatalf("resync queued %d zones, want the unchanged zone once", n)
+	}
+}
+
+func TestPerZoneDeletedZoneThatNoReplicaVerifiesStopsRetryingEverySecond(t *testing.T) {
+	h, zone := newPerZoneHarness(t)
+	h.r.Options.LeaseDuration = 2 * time.Minute
+	h.settle()
+	if err := h.c.Delete(h.ctx, zone); err != nil {
+		t.Fatal(err)
+	}
+	deleted := h.r.Options.Now()
+	clock := deleted
+	h.r.Options.Now = func() time.Time { return clock }
+
+	passes := 0
+	var last time.Duration
+	for clock.Sub(deleted) < time.Hour {
+		res := h.run(zoneQueuePrefix + zone.Name)
+		passes++
+		var current dnsv1alpha1.DNSZone
+		if err := h.c.Get(h.ctx, client.ObjectKeyFromObject(zone), &current); apierrors.IsNotFound(err) {
+			return
+		} else if err != nil {
+			t.Fatal(err)
+		}
+		if res.RequeueAfter <= 0 {
+			return
+		}
+		last = res.RequeueAfter
+		clock = clock.Add(res.RequeueAfter)
+	}
+	if last <= staleAssociationRetry {
+		t.Fatalf("an hour after deletion with no replica verifying, the zone still holds its finalizer and its key ran %d times, the last requeue after %v", passes, last)
 	}
 }

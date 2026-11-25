@@ -151,6 +151,21 @@ func TestPassListsTheProjectsBindingsOnce(t *testing.T) {
 	}
 }
 
+func TestOnlyAWholeProjectPassListsRecordInputs(t *testing.T) {
+	for _, tc := range []struct {
+		perZone bool
+		lists   int
+	}{{perZone: true, lists: 0}, {perZone: false, lists: 1}} {
+		t.Run(fmt.Sprintf("per-zone %v", tc.perZone), func(t *testing.T) {
+			h, _, c := countedHarness(t, tc.perZone)
+			h.run(projectQueueKey)
+			if got := c.take(); got["DNSRecordContributionList"] != tc.lists || got["DNSRecordSetList"] != tc.lists {
+				t.Fatalf("a pass sent %v, want %d LIST of contributions and of record sets", got, tc.lists)
+			}
+		})
+	}
+}
+
 func TestPassConvergesOnABindingWrittenAfterItsList(t *testing.T) {
 	h, _, c := countedHarness(t, true)
 	if err := h.c.Create(h.ctx, orphanBinding("labelled", true)); err != nil {

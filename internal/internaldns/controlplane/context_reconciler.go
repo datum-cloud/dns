@@ -1314,13 +1314,25 @@ func (r *Reconciler) observeManagedZone(ctx context.Context, c *dnsv1alpha1.DNSR
 // listProjectBindings lists this project's resolver bindings by label instead
 // of every project's bindings in the platform namespace. Bindings written
 // without the label, before it existed or by an older replica during a
-// rollout, come from a second list of unlabelled bindings, which is empty once
-// every binding carries the label; this project's are labelled as they are
-// found.
+// rollout, come from a second list of unlabelled bindings until that list and
+// the labelling of this project's first succeed; the label alone then finds
+// them all.
 func (r *Reconciler) listProjectBindings(ctx context.Context, list *dnsv1alpha1.DNSResolverBindingList) error {
+	// Read before the list, so that a list by the label sees every binding the
+	// labelling wrote.
+	labelled := r.bindingsLabelled.Load()
 	if err := r.List(ctx, list, client.InNamespace(r.Options.PlatformNamespace), client.MatchingLabels{referenceProjectLabel: string(r.Options.ProjectUID)}); err != nil {
 		return err
 	}
+	if labelled {
+		return nil
+	}
+	return r.labelProjectBindings(ctx, list)
+}
+
+// labelProjectBindings adds this project's unlabelled bindings to list and
+// labels them.
+func (r *Reconciler) labelProjectBindings(ctx context.Context, list *dnsv1alpha1.DNSResolverBindingList) error {
 	unlabelled, err := labels.NewRequirement(referenceProjectLabel, selection.DoesNotExist, nil)
 	if err != nil {
 		return err
@@ -1347,7 +1359,9 @@ func (r *Reconciler) listProjectBindings(ctx context.Context, list *dnsv1alpha1.
 	}
 	if len(failed) > 0 {
 		ctrl.LoggerFrom(ctx).Error(errors.Join(failed...), "label resolver bindings with their project")
+		return nil
 	}
+	r.bindingsLabelled.Store(true)
 	return nil
 }
 

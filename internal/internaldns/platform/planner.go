@@ -76,10 +76,23 @@ type Planner struct {
 	priorOutbox        string
 	priorPayload       []byte
 	priorEnvelopeBytes int
+
+	measuredAt time.Time
 }
 
 func (p *Planner) ownerKey() client.ObjectKey {
 	return client.ObjectKey{Namespace: p.Config.Namespace, Name: "dns-shard-owner-" + model.OpaqueToken(p.Config.Region+"/"+p.Config.Shard)}
+}
+
+// capacity returns the recorder of the shard's gauges for a pass at now. A
+// process that has not measured the shard for a lease removes them first, even
+// while it holds the lease: its last values may no longer hold.
+func (p *Planner) capacity(now time.Time, lease time.Duration) shardCapacity {
+	capacity := shardCapacity{region: p.Config.Region, shard: p.Config.Shard, now: now, measuredAt: &p.measuredAt}
+	if now.Sub(p.measuredAt) >= lease {
+		capacity.forget()
+	}
+	return capacity
 }
 
 // Release ends the shard lease this planner holds, so the next process plans
@@ -129,7 +142,7 @@ func (p *Planner) Step(ctx context.Context) error {
 		lease = 30 * time.Second
 	}
 	key := p.ownerKey()
-	capacity := shardCapacity{region: c.Region, shard: c.Shard}
+	capacity := p.capacity(now, lease)
 	var owner corev1.ConfigMap
 	if err := p.Client.Get(ctx, key, &owner); apierrors.IsNotFound(err) {
 		state := shardState{Holder: c.Identity, Epoch: model.NextWriterEpoch(0, now), NextRevision: 1, LeaseUntil: now.Add(lease)}

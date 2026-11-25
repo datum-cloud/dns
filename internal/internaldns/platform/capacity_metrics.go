@@ -4,6 +4,7 @@ package platform
 
 import (
 	"strings"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"sigs.k8s.io/controller-runtime/pkg/metrics"
@@ -53,7 +54,11 @@ func init() {
 	metrics.Registry.MustRegister(servingEnvelopeBytes, servingEnvelopeBudgetBytes, servingBindings, servingBindingsBudget, servingPublishRefusals, servingBindingRefusals)
 }
 
-type shardCapacity struct{ region, shard string }
+type shardCapacity struct {
+	region, shard string
+	now           time.Time
+	measuredAt    *time.Time
+}
 
 // budgets also exports each refusal reason at zero, so that increase() sees a
 // shard's first refusal.
@@ -79,6 +84,7 @@ func (s shardCapacity) forget() {
 func (s shardCapacity) encoded(envelopeBytes, bindings int) {
 	servingEnvelopeBytes.WithLabelValues(s.region, s.shard).Set(float64(envelopeBytes))
 	servingBindings.WithLabelValues(s.region, s.shard).Set(float64(bindings))
+	*s.measuredAt = s.now
 }
 
 func (s shardCapacity) refusedPublish(reason string) {

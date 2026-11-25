@@ -90,9 +90,9 @@ func TestVerifiedRenewalRenewsTheMemberLeaseNotTheManifest(t *testing.T) {
 		t.Fatalf("member lease = %q, want %q", lease.Data[memberLeaseKey], want)
 	}
 
-	f.now = f.now.Add(memberRowLease - memberRowRenewBefore)
+	f.now = f.now.Add(publicationRowLease - publicationRowRenewBefore)
 	f.ack(model.AckVerified)
-	if got := f.get(); got.ResourceVersion == first.ResourceVersion || !got.Status.ReplicaAcknowledgements[0].ValidUntil.Time.Equal(f.now.Add(memberRowLease)) {
+	if got := f.get(); got.ResourceVersion == first.ResourceVersion || !got.Status.ReplicaAcknowledgements[0].ValidUntil.Time.Equal(f.now.Add(publicationRowLease)) {
 		t.Fatalf("a row near lapsing was not renewed: %#v", got.Status.ReplicaAcknowledgements)
 	}
 }

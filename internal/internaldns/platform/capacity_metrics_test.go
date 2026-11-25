@@ -425,14 +425,22 @@ func TestPlannerStopsExportingAShardItHasNotMeasuredForALease(t *testing.T) {
 		t.Fatal(err)
 	}
 	requireShardGauges(t, shard)
+	measured := *clock
 	*down = true
-	*clock = clock.Add(lease)
-	if err := p.Step(ctx); err == nil {
-		t.Fatal("a pass that could not read the shard's lease succeeded")
-	}
-	for _, name := range shardGauges {
-		if got, ok := shardMetric(t, name, shard); ok {
-			t.Fatalf("shard %s was last measured one lease ago, and this process still exports %s %v", shard, name, got)
+	// Passes start at most 10 s apart, so a failed pass must not count as a
+	// measurement: the gauges go at the first pass one lease on, and stay gone.
+	for end := measured.Add(2 * lease); clock.Before(end); {
+		*clock = clock.Add(10 * time.Second)
+		if err := p.Step(ctx); err == nil {
+			t.Fatal("a pass that could not read the shard's lease succeeded")
+		}
+		if clock.Sub(measured) < lease {
+			continue
+		}
+		for _, name := range shardGauges {
+			if got, ok := shardMetric(t, name, shard); ok {
+				t.Fatalf("shard %s was last measured %v ago, at passes 10 s apart, and this process still exports %s %v", shard, clock.Sub(measured), name, got)
+			}
 		}
 	}
 }

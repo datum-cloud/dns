@@ -128,7 +128,7 @@ func (r *Reconciler) reconcileProject(ctx context.Context, ns string) (ctrl.Resu
 	var contributions dnsv1alpha1.DNSRecordContributionList
 	var records dnsv1alpha1.DNSRecordSetList
 	var policies dnsv1alpha1.DNSNamingPolicyList
-	for _, item := range []client.ObjectList{&zones, &assocs, &regs, &contributions, &records, &policies} {
+	for _, item := range r.withRecordInputs([]client.ObjectList{&zones, &assocs, &regs, &policies}, &contributions, &records) {
 		if err := r.List(ctx, item, client.InNamespace(ns)); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -280,6 +280,15 @@ func (r *Reconciler) reconcileProject(ctx context.Context, ns string) (ctrl.Resu
 		earliest = renewBy
 	}
 	return ctrl.Result{RequeueAfter: nextProjectRequeue(r.Options.Now().UTC(), earliest, r.Options.LeaseDuration)}, errors.Join(zoneErrors...)
+}
+
+// withRecordInputs adds the pass's record inputs to lists in whole-project mode
+// only. In per-zone mode each zone key lists its own, and the pass reads none.
+func (r *Reconciler) withRecordInputs(lists []client.ObjectList, records ...client.ObjectList) []client.ObjectList {
+	if r.Options.PerZoneReconcile {
+		return lists
+	}
+	return append(lists, records...)
 }
 
 // nextProjectRequeue never lets a later scheduled reconciliation

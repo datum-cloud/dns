@@ -1,0 +1,4 @@
+# CRDs installed only in the authoritative cluster, never on a tenant-facing
+# control plane. config/agent includes this directory; config/crd does not.
+resources:
+- dns.networking.miloapis.com_zoneclaimsets.yaml

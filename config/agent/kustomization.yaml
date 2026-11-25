@@ -2,6 +2,7 @@ namespace: dns-agent-system
 
 resources:
 - ../crd
+- ../crd-authoritative
 - ../rbac
 - manager.yaml
 - pdns-service.yaml

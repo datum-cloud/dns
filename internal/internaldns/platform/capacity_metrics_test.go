@@ -5,6 +5,7 @@ package platform
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -16,6 +17,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/metrics"
 )
 
@@ -380,4 +382,130 @@ func TestPlannerTakingOverAnUnchangedShardExportsItsSize(t *testing.T) {
 		t.Fatal(err)
 	}
 	requirePublishedSize(t, next, 1)
+}
+
+var shardGauges = []string{"internal_dns_serving_envelope_bytes", "internal_dns_serving_envelope_budget_bytes", "internal_dns_serving_bindings", "internal_dns_serving_bindings_budget"}
+
+func requireShardGauges(t *testing.T, shard string) {
+	t.Helper()
+	for _, name := range shardGauges {
+		requireShardMetric(t, name, shard)
+	}
+}
+
+// clockedPlanner is capacityPlanner with a clock that the test moves.
+func clockedPlanner(t *testing.T, cfg PlannerConfig, objects ...client.Object) (*Planner, *time.Time) {
+	t.Helper()
+	p := capacityPlanner(t, cfg, objects...)
+	clock := p.Now()
+	p.Now = func() time.Time { return clock }
+	return p, &clock
+}
+
+// failReads fails each Get of p's client while the flag it returns is set, as
+// a publication store that p cannot read.
+func failReads(p *Planner) *bool {
+	down := new(bool)
+	p.Client = interceptor.NewClient(p.Client.(client.WithWatch), interceptor.Funcs{Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+		if *down {
+			return errors.New("publication store unavailable")
+		}
+		return c.Get(ctx, key, obj, opts...)
+	}})
+	return down
+}
+
+func TestPlannerStopsExportingAShardItHasNotMeasuredForALease(t *testing.T) {
+	ctx := context.Background()
+	shard := "unmeasured-for-a-lease"
+	lease := 2 * time.Minute
+	p, clock := clockedPlanner(t, PlannerConfig{Shard: shard, LeaseDuration: lease}, shardBinding(shard, 1))
+	down := failReads(p)
+	if err := p.Step(ctx); err != nil {
+		t.Fatal(err)
+	}
+	requireShardGauges(t, shard)
+	*down = true
+	*clock = clock.Add(lease)
+	if err := p.Step(ctx); err == nil {
+		t.Fatal("a pass that could not read the shard's lease succeeded")
+	}
+	for _, name := range shardGauges {
+		if got, ok := shardMetric(t, name, shard); ok {
+			t.Fatalf("shard %s was last measured one lease ago, and this process still exports %s %v", shard, name, got)
+		}
+	}
+}
+
+func TestPlannerKeepsExportingAnUnchangedShardForLessThanALeaseOfFailedReads(t *testing.T) {
+	ctx := context.Background()
+	shard := "measured-within-a-lease"
+	lease := 2 * time.Minute
+	p, clock := clockedPlanner(t, PlannerConfig{Shard: shard, LeaseDuration: lease}, shardBinding(shard, 1))
+	down := failReads(p)
+	if err := p.Step(ctx); err != nil {
+		t.Fatal(err)
+	}
+	*clock = clock.Add(10 * time.Second)
+	if err := p.Step(ctx); err != nil {
+		t.Fatal(err)
+	}
+	*down = true
+	*clock = clock.Add(lease - time.Second)
+	if err := p.Step(ctx); err == nil {
+		t.Fatal("a pass that could not read the shard's lease succeeded")
+	}
+	requireShardGauges(t, shard)
+}
+
+func TestPlannerExportsAShardAgainWhenItMeasuresItAfterAnExpiry(t *testing.T) {
+	ctx := context.Background()
+	shard := "measured-after-an-expiry"
+	lease := 2 * time.Minute
+	p, clock := clockedPlanner(t, PlannerConfig{Shard: shard, LeaseDuration: lease}, shardBinding(shard, 1))
+	down := failReads(p)
+	if err := p.Step(ctx); err != nil {
+		t.Fatal(err)
+	}
+	*down = true
+	*clock = clock.Add(lease)
+	if err := p.Step(ctx); err == nil {
+		t.Fatal("a pass that could not read the shard's lease succeeded")
+	}
+	*down = false
+	*clock = clock.Add(10 * time.Second)
+	if err := p.Step(ctx); err != nil {
+		t.Fatal(err)
+	}
+	requireShardGauges(t, shard)
+	requirePublishedSize(t, p, 1)
+}
+
+func TestPlannerThatPlansEachPassKeepsItsGaugesThroughManyLeases(t *testing.T) {
+	ctx := context.Background()
+	shard := "planned-for-many-leases"
+	lease := 2 * time.Minute
+	p, clock := clockedPlanner(t, PlannerConfig{Shard: shard, LeaseDuration: lease}, shardBinding(shard, 1))
+	for end := clock.Add(3 * lease); !clock.After(end); *clock = clock.Add(10 * time.Second) {
+		if err := p.Step(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	requireShardGauges(t, shard)
+	requirePublishedSize(t, p, 1)
+}
+
+func TestPlannerOverItsByteBudgetExportsItsEnvelopeAfterALeaseOfRefusalsOnOneReplica(t *testing.T) {
+	ctx := context.Background()
+	shard := "refused-envelope-one-replica"
+	lease := 2 * time.Minute
+	p, clock := clockedPlanner(t, PlannerConfig{Shard: shard, LeaseDuration: lease, MaxSnapshotBytes: 100})
+	for end := clock.Add(lease + 10*time.Second); !clock.After(end); *clock = clock.Add(10 * time.Second) {
+		if err := p.Step(ctx); err == nil {
+			t.Fatal("an envelope over its 100-byte budget was published")
+		}
+	}
+	if got := requireShardMetric(t, "internal_dns_serving_envelope_bytes", shard); got <= 100 {
+		t.Fatalf("envelope size %v after a lease of passes refused over a 100-byte budget", got)
+	}
 }

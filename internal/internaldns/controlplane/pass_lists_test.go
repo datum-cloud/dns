@@ -12,7 +12,10 @@ import (
 	"testing"
 
 	dnsv1alpha1 "go.miloapis.com/dns/api/v1alpha1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -103,6 +106,79 @@ func (h *perZoneHarness) binding(name string) *dnsv1alpha1.DNSResolverBinding {
 		h.t.Fatal(err)
 	}
 	return &b
+}
+
+// countedHarness is the per-zone harness, in either mode, with every LIST of
+// its reconciler counted.
+func countedHarness(t *testing.T, perZone bool) (*perZoneHarness, *dnsv1alpha1.DNSZone, *listCounts) {
+	t.Helper()
+	h, zone := newPerZoneHarness(t)
+	c := &listCounts{Client: h.c}
+	h.r.Client = c
+	h.r.Options.PerZoneReconcile = perZone
+	return h, zone, c
+}
+
+// dropZone deletes the harness's zone, so that a pass lists bindings only in
+// its contexts and bindings steps.
+func (h *perZoneHarness) dropZone(zone *dnsv1alpha1.DNSZone) {
+	h.t.Helper()
+	var z dnsv1alpha1.DNSZone
+	if err := h.c.Get(h.ctx, client.ObjectKeyFromObject(zone), &z); err != nil {
+		h.t.Fatal(err)
+	}
+	z.Finalizers = nil
+	if err := h.c.Update(h.ctx, &z); err != nil {
+		h.t.Fatal(err)
+	}
+	if err := h.c.Delete(h.ctx, &z); err != nil {
+		h.t.Fatal(err)
+	}
+}
+
+func TestPassListsTheProjectsBindingsOnce(t *testing.T) {
+	for _, perZone := range []bool{true, false} {
+		t.Run(fmt.Sprintf("per-zone %v", perZone), func(t *testing.T) {
+			h, zone, c := countedHarness(t, perZone)
+			h.dropZone(zone)
+			h.run(projectQueueKey)
+			c.take()
+			h.run(projectQueueKey)
+			if got := c.take(); got[labelledBindingLists("project-a")] != 1 || got[unlabelledBindingLists] != 0 {
+				t.Fatalf("a pass sent %v, want one LIST of the project's bindings", got)
+			}
+		})
+	}
+}
+
+func TestPassConvergesOnABindingWrittenAfterItsList(t *testing.T) {
+	h, _, c := countedHarness(t, true)
+	if err := h.c.Create(h.ctx, orphanBinding("labelled", true)); err != nil {
+		t.Fatal(err)
+	}
+	written := false
+	c.beforeList = func(list client.ObjectList) {
+		if _, contexts := list.(*dnsv1alpha1.DNSResolverContextList); !contexts || written {
+			return
+		}
+		written = true
+		b := h.binding("labelled")
+		b.Annotations = map[string]string{"written": "after the pass listed it"}
+		if err := h.c.Update(h.ctx, b); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for pass := 0; !h.binding("labelled").Spec.Tombstone; pass++ {
+		if pass == 2 {
+			t.Fatal("two passes left a binding whose access is gone")
+		}
+		if _, err := h.r.Reconcile(h.ctx, ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "project", Name: projectQueueKey}}); err != nil && !apierrors.IsConflict(err) {
+			t.Fatal(err)
+		}
+	}
+	if b := h.binding("labelled"); b.Annotations["written"] == "" {
+		t.Fatalf("the withdrawal overwrote a write made after the pass listed the binding: %v", b.Annotations)
+	}
 }
 
 func TestPassWithdrawsAnOrphanedBindingWithOrWithoutItsProjectLabel(t *testing.T) {

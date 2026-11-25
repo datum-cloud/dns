@@ -549,7 +549,9 @@ These metrics show leases moving between replicas:
 
 Each shard's serving snapshot is planned by the replica that holds the
 shard's lease. These gauges show how full the shard is. Only the holder
-exports them; a replica that finds another holder removes them:
+exports them. A replica removes them when it finds another holder, or when
+it has not measured the shard for one lease, for example while it cannot
+read the shard's lease:
 
 - `internal_dns_serving_envelope_bytes{region,shard}`: the size of the serving
   envelope the planner last encoded, or of the active one while the shard's

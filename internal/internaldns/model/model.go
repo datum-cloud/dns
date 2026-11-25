@@ -121,6 +121,7 @@ type ZoneAttachment struct {
 // Binding is a logical cache and policy context in shared processes.
 type Binding struct {
 	BindingUID            string           `json:"bindingUID"`
+	BindingName           string           `json:"bindingName,omitempty"` // for the control plane's reads; members ignore it
 	ProjectUID            string           `json:"projectUID"`
 	ContextUID            string           `json:"contextUID"`
 	BindingGeneration     uint64           `json:"bindingGeneration"`

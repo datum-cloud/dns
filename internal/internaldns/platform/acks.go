@@ -189,9 +189,9 @@ func (s *AckSink) publication(ctx context.Context, a model.MemberAck, row dnsv1a
 		}
 	}
 	base := m.DeepCopy()
-	if publicationRowChanged(m.Status.ReplicaAcknowledgements, row, now) {
+	if memberRowChanged(m.Status.ReplicaAcknowledgements, row, now) {
 		if a.Phase == model.AckVerified {
-			until := metav1.NewTime(a.ObservedAt.Add(publicationRowLease))
+			until := metav1.NewTime(a.ObservedAt.Add(memberRowLease))
 			row.ValidUntil = &until
 		}
 		m.Status.ReplicaAcknowledgements = upsertAck(m.Status.ReplicaAcknowledgements, row)
@@ -221,91 +221,159 @@ func (s *AckSink) serving(ctx context.Context, a model.MemberAck, row dnsv1alpha
 	if err != nil {
 		return err
 	}
-	var bindings dnsv1alpha1.DNSResolverBindingList
 	if e == nil || e.Epoch != a.Epoch || e.Revision != a.Revision {
-		return s.recordPatternPresence(ctx, &bindings, a, row)
+		return s.recordPatternPresence(ctx, snapshot, a, row)
 	}
-	if err := s.Client.List(ctx, &bindings, client.InNamespace(s.Namespace)); err != nil {
+	binding, err := s.committedBinding(ctx, snapshot, a.ResourceUID)
+	if err != nil {
 		return err
 	}
-	recorded := false
-	for _, b := range snapshot.Bindings {
-		if b.BindingUID != a.ResourceUID {
-			continue
-		}
-		for i := range bindings.Items {
-			binding := &bindings.Items[i]
-			if string(binding.UID) != b.BindingUID || binding.Spec.Configuration.Generation != int64(b.BindingGeneration) || binding.Spec.Configuration.Revision != int64(b.ConfigurationRevision) || binding.Spec.Version.Sequence != int64(b.Version.Sequence) || binding.Spec.Version.Epoch != int64(b.Version.Epoch) {
-				continue
-			}
-			recorded = true
-			base := binding.DeepCopy()
-			binding.Status.MemberAcknowledgements = s.withoutRetired(binding.Status.MemberAcknowledgements, now)
-			bindingRow := row
-			bindingRow.Revision = binding.Spec.Configuration.Revision
-			bindingRow.WriterEpoch = int64(a.Epoch)
-			bindingRow.SnapshotRevision = int64(a.Revision)
-			bindingRow.AccessEpoch = binding.Spec.Version.Epoch
-			bindingRow.AccessSequence = binding.Spec.Version.Sequence
-			binding.Status.MemberAcknowledgements = upsertAck(binding.Status.MemberAcknowledgements, bindingRow)
-			complete := s.bindingVerified(binding, e, snapshot, now)
-			if complete {
-				binding.Status.Phase = dnsValueServing
-				if binding.Spec.Tombstone {
-					binding.Status.Phase = dnsValueWithdrawn
-				}
-				binding.Status.ObservedConfigurationRevision = binding.Spec.Configuration.Revision
-			} else {
-				binding.Status.Phase = dnsValuePending
-			}
-			s.bindingConditions(binding, e, snapshot, now, complete)
-			if jsonEqualStatus(base.Status, binding.Status) {
-				continue
-			}
-			if err := s.Client.Status().Patch(ctx, binding, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
-				return err
-			}
+	if binding == nil {
+		return s.recordPatternPresence(ctx, snapshot, a, row)
+	}
+	return s.recordServing(ctx, binding, a, row, e, snapshot, now)
+}
+
+// committedBinding reads the binding with uid at the fence the committed
+// snapshot serves; it is nil when the snapshot does not serve it there.
+func (s *AckSink) committedBinding(ctx context.Context, snapshot *model.ServingSnapshot, uid string) (*dnsv1alpha1.DNSResolverBinding, error) {
+	entry, ok := snapshotBinding(snapshot, uid)
+	if !ok {
+		return nil, nil
+	}
+	b, err := s.resolverBinding(ctx, entry)
+	if err != nil || b == nil || !servesFence(b, entry) {
+		return nil, err
+	}
+	return b, nil
+}
+
+// snapshotBinding is the snapshot's entry for uid, or an entry with the UID
+// alone when the snapshot has none.
+func snapshotBinding(snapshot *model.ServingSnapshot, uid string) (model.Binding, bool) {
+	if snapshot != nil {
+		if i := slices.IndexFunc(snapshot.Bindings, func(b model.Binding) bool { return b.BindingUID == uid }); i >= 0 {
+			return snapshot.Bindings[i], true
 		}
 	}
-	if !recorded {
-		return s.recordPatternPresence(ctx, &bindings, a, row)
+	return model.Binding{BindingUID: uid}, false
+}
+
+// resolverBinding reads the binding that entry names, or nil when that name
+// holds another UID. An entry with no name, from a snapshot published before
+// entries carried names, is found by a list of the namespace.
+func (s *AckSink) resolverBinding(ctx context.Context, entry model.Binding) (*dnsv1alpha1.DNSResolverBinding, error) {
+	if entry.BindingName == "" {
+		return s.listedBinding(ctx, entry.BindingUID)
 	}
-	return nil
+	var b dnsv1alpha1.DNSResolverBinding
+	err := s.Client.Get(ctx, client.ObjectKey{Namespace: s.Namespace, Name: entry.BindingName}, &b)
+	if apierrors.IsNotFound(err) || err == nil && string(b.UID) != entry.BindingUID {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &b, nil
+}
+
+func (s *AckSink) listedBinding(ctx context.Context, uid string) (*dnsv1alpha1.DNSResolverBinding, error) {
+	var bindings dnsv1alpha1.DNSResolverBindingList
+	if err := s.Client.List(ctx, &bindings, client.InNamespace(s.Namespace)); err != nil {
+		return nil, err
+	}
+	for i := range bindings.Items {
+		if string(bindings.Items[i].UID) == uid {
+			return &bindings.Items[i], nil
+		}
+	}
+	return nil, nil
+}
+
+func servesFence(b *dnsv1alpha1.DNSResolverBinding, desired model.Binding) bool {
+	return b.Spec.Configuration.Generation == int64(desired.BindingGeneration) && b.Spec.Configuration.Revision == int64(desired.ConfigurationRevision) &&
+		b.Spec.Version.Sequence == int64(desired.Version.Sequence) && b.Spec.Version.Epoch == int64(desired.Version.Epoch)
+}
+
+// recordServing renews the member's lease and writes its row on the binding
+// only when the row changed or nears the end of its lease.
+func (s *AckSink) recordServing(ctx context.Context, binding *dnsv1alpha1.DNSResolverBinding, a model.MemberAck, row dnsv1alpha1.DNSApplyAcknowledgement, e *model.Envelope, snapshot *model.ServingSnapshot, now time.Time) error {
+	renewed := false
+	if a.Phase == model.AckVerified {
+		var err error
+		if renewed, err = s.renewMemberLease(ctx, a.MemberID, a.ValidUntil, a.ValidUntil.Sub(a.ObservedAt)); err != nil {
+			return err
+		}
+	}
+	base := binding.DeepCopy()
+	binding.Status.MemberAcknowledgements = s.withoutRetired(binding.Status.MemberAcknowledgements, now)
+	row.Revision = binding.Spec.Configuration.Revision
+	row.WriterEpoch = int64(a.Epoch)
+	row.SnapshotRevision = int64(a.Revision)
+	row.AccessEpoch = binding.Spec.Version.Epoch
+	row.AccessSequence = binding.Spec.Version.Sequence
+	if memberRowChanged(binding.Status.MemberAcknowledgements, row, now) {
+		if a.Phase == model.AckVerified {
+			until := metav1.NewTime(a.ObservedAt.Add(memberRowLease))
+			row.ValidUntil = &until
+		}
+		binding.Status.MemberAcknowledgements = upsertAck(binding.Status.MemberAcknowledgements, row)
+	} else if !renewed {
+		return nil
+	}
+	leases, leaseErr := s.loadServingLeases(ctx, s.bindingMembers(binding.Status.MemberAcknowledgements, now))
+	if leaseErr != nil {
+		log.FromContext(ctx).Error(leaseErr, "member leases unreadable; their rows decide")
+	}
+	s.withLeases(leases).setBindingStatus(binding, e, snapshot, now)
+	if jsonEqualStatus(base.Status, binding.Status) {
+		return nil
+	}
+	return s.Client.Status().Patch(ctx, binding, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{}))
+}
+
+// setBindingStatus derives the binding's phase and conditions from its rows.
+func (s *AckSink) setBindingStatus(b *dnsv1alpha1.DNSResolverBinding, envelope *model.Envelope, snapshot *model.ServingSnapshot, now time.Time) {
+	complete := s.bindingVerified(b, envelope, snapshot, now)
+	s.bindingConditions(b, envelope, snapshot, now, complete)
+	switch {
+	case !complete:
+		b.Status.Phase = dnsValuePending
+	case b.Spec.Tombstone:
+		b.Status.Phase = dnsValueWithdrawn
+		b.Status.ObservedConfigurationRevision = b.Spec.Configuration.Revision
+	default:
+		b.Status.Phase = dnsValueServing
+		b.Status.ObservedConfigurationRevision = b.Spec.Configuration.Revision
+	}
 }
 
 // recordPatternPresence gives a pattern member a row on a binding it
 // acknowledged at a revision that could not be recorded, so the member is
 // required for the binding's withdrawal even if it never acknowledges the
 // committed revision. The row proves nothing, because its revision is zero.
-func (s *AckSink) recordPatternPresence(ctx context.Context, bindings *dnsv1alpha1.DNSResolverBindingList, a model.MemberAck, row dnsv1alpha1.DNSApplyAcknowledgement) error {
+func (s *AckSink) recordPatternPresence(ctx context.Context, snapshot *model.ServingSnapshot, a model.MemberAck, row dnsv1alpha1.DNSApplyAcknowledgement) error {
 	if len(s.MemberPatterns) == 0 || slices.ContainsFunc(s.Members, func(m model.Member) bool { return m.MemberID == a.MemberID }) {
 		return nil
 	}
 	if _, ok := model.LookupMember(nil, s.MemberPatterns, a.MemberID); !ok {
 		return nil
 	}
-	if bindings.Items == nil {
-		if err := s.Client.List(ctx, bindings, client.InNamespace(s.Namespace)); err != nil {
-			return err
-		}
+	entry, _ := snapshotBinding(snapshot, a.ResourceUID)
+	binding, err := s.resolverBinding(ctx, entry)
+	if err != nil || binding == nil {
+		return err
 	}
-	for i := range bindings.Items {
-		binding := &bindings.Items[i]
-		if string(binding.UID) != a.ResourceUID {
-			continue
-		}
-		if slices.ContainsFunc(binding.Status.MemberAcknowledgements, func(r dnsv1alpha1.DNSApplyAcknowledgement) bool { return r.MemberID == a.MemberID }) {
-			return nil
-		}
-		base := binding.DeepCopy()
-		presence := row
-		presence.Revision = 0
-		presence.WriterEpoch = int64(a.Epoch)
-		presence.SnapshotRevision = int64(a.Revision)
-		binding.Status.MemberAcknowledgements = append(binding.Status.MemberAcknowledgements, presence)
-		return s.Client.Status().Patch(ctx, binding, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{}))
+	if slices.ContainsFunc(binding.Status.MemberAcknowledgements, func(r dnsv1alpha1.DNSApplyAcknowledgement) bool { return r.MemberID == a.MemberID }) {
+		return nil
 	}
-	return nil
+	base := binding.DeepCopy()
+	presence := row
+	presence.Revision = 0
+	presence.WriterEpoch = int64(a.Epoch)
+	presence.SnapshotRevision = int64(a.Revision)
+	binding.Status.MemberAcknowledgements = append(binding.Status.MemberAcknowledgements, presence)
+	return s.Client.Status().Patch(ctx, binding, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{}))
 }
 
 // withoutRetired drops the rows of pattern members past
@@ -492,10 +560,6 @@ func (s *AckSink) verified(rows []dnsv1alpha1.DNSApplyAcknowledgement, now time.
 		}
 		return false
 	}
-	live := func(group string, member model.Member) bool {
-		until, ok := s.leases[memberLeaseKeyFor(group, member.MemberID)]
-		return !ok || until.After(now)
-	}
 	if role == "publication" {
 		groups := s.publicationGroups()
 		for group, members := range groups {
@@ -504,7 +568,7 @@ func (s *AckSink) verified(rows []dnsv1alpha1.DNSApplyAcknowledgement, now time.
 			for _, member := range members {
 				if member.Role == dnsValueRegional || member.Role == dnsValueCluster {
 					required++
-					if matches(member) && live(group, member) {
+					if matches(member) && s.memberLive(group, member.MemberID, now) {
 						verified++
 					}
 				}
@@ -586,34 +650,7 @@ func (s *AckSink) Refresh(ctx context.Context) error {
 	// This shard's own failures skip only its bindings: one sink writes each
 	// manifest's status, so a failing shard must not leave publication it owns
 	// unrefreshed as acknowledgements expire.
-	var refreshErrors error
-	var bindings dnsv1alpha1.DNSResolverBindingList
-	envelope, snapshot, err := s.shardState(ctx, &bindings)
-	if err != nil {
-		refreshErrors = err
-		bindings.Items = nil
-	}
-	for i := range bindings.Items {
-		b := &bindings.Items[i]
-		base := b.DeepCopy()
-		b.Status.MemberAcknowledgements = s.withoutRetired(b.Status.MemberAcknowledgements, now)
-		complete := s.bindingVerified(b, envelope, snapshot, now)
-		s.bindingConditions(b, envelope, snapshot, now, complete)
-		if complete {
-			b.Status.Phase = dnsValueServing
-			if b.Spec.Tombstone {
-				b.Status.Phase = dnsValueWithdrawn
-			}
-			b.Status.ObservedConfigurationRevision = b.Spec.Configuration.Revision
-		} else {
-			b.Status.Phase = dnsValuePending
-		}
-		if !jsonEqualStatus(base.Status, b.Status) {
-			if err := s.Client.Status().Patch(ctx, b, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
-				refreshErrors = errors.Join(refreshErrors, err)
-			}
-		}
-	}
+	refreshErrors := s.refreshBindings(ctx, now)
 	var owners dnsv1alpha1.DNSPublicationOwnershipList
 	if err := s.Client.List(ctx, &owners, client.InNamespace(s.Namespace)); err != nil {
 		return err
@@ -659,6 +696,31 @@ func (s *AckSink) Refresh(ctx context.Context) error {
 	}
 	for range projections {
 		refreshErrors = errors.Join(refreshErrors, <-results)
+	}
+	return refreshErrors
+}
+
+// refreshBindings derives the status of each of the shard's bindings again,
+// from its rows and its members' leases.
+func (s *AckSink) refreshBindings(ctx context.Context, now time.Time) error {
+	var bindings dnsv1alpha1.DNSResolverBindingList
+	envelope, snapshot, err := s.shardState(ctx, &bindings)
+	if err != nil {
+		return err
+	}
+	leases, refreshErrors := s.loadServingLeases(ctx, s.servingMembers(bindings.Items, now))
+	leased := s.withLeases(leases)
+	for i := range bindings.Items {
+		b := &bindings.Items[i]
+		base := b.DeepCopy()
+		b.Status.MemberAcknowledgements = s.withoutRetired(b.Status.MemberAcknowledgements, now)
+		leased.setBindingStatus(b, envelope, snapshot, now)
+		if jsonEqualStatus(base.Status, b.Status) {
+			continue
+		}
+		if err := s.Client.Status().Patch(ctx, b, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
+			refreshErrors = errors.Join(refreshErrors, err)
+		}
 	}
 	return refreshErrors
 }
@@ -786,12 +848,7 @@ func (s *AckSink) bindingProof(b *dnsv1alpha1.DNSResolverBinding, envelope *mode
 	if !present {
 		return false
 	}
-	rows := make([]dnsv1alpha1.DNSApplyAcknowledgement, 0, len(b.Status.MemberAcknowledgements))
-	for _, row := range b.Status.MemberAcknowledgements {
-		if row.SnapshotRevision == int64(envelope.Revision) {
-			rows = append(rows, row)
-		}
-	}
+	rows := s.currentRows(b, envelope, now)
 	members := s.bindingMembers(b.Status.MemberAcknowledgements, now)
 	if len(s.MemberPatterns) > 0 && !slices.ContainsFunc(members, func(m model.Member) bool { return m.Role == dnsValueNode }) {
 		return false
@@ -832,6 +889,34 @@ func (s *AckSink) bindingConditions(b *dnsv1alpha1.DNSResolverBinding, envelope 
 	if !available && !b.Spec.Tombstone && b.Status.ObservedConfigurationRevision == b.Spec.Configuration.Revision {
 		apimeta.SetStatusCondition(&b.Status.Conditions, metav1.Condition{Type: dnsValueServing, Status: metav1.ConditionUnknown, Reason: "ObservationUnavailable", Message: "Current serving health is unavailable", ObservedGeneration: b.Generation, LastTransitionTime: metav1.NewTime(now)})
 	}
+}
+
+// currentRows are the binding's rows for the committed snapshot, from members
+// whose lease has not lapsed.
+func (s *AckSink) currentRows(b *dnsv1alpha1.DNSResolverBinding, envelope *model.Envelope, now time.Time) []dnsv1alpha1.DNSApplyAcknowledgement {
+	group := s.Region + "/" + s.Shard
+	rows := make([]dnsv1alpha1.DNSApplyAcknowledgement, 0, len(b.Status.MemberAcknowledgements))
+	for _, row := range b.Status.MemberAcknowledgements {
+		if row.SnapshotRevision == int64(envelope.Revision) && s.memberLive(group, row.MemberID, now) {
+			rows = append(rows, row)
+		}
+	}
+	return rows
+}
+
+// servingMembers are the members that any of bindings requires.
+func (s *AckSink) servingMembers(bindings []dnsv1alpha1.DNSResolverBinding, now time.Time) []model.Member {
+	var members []model.Member
+	seen := map[string]bool{}
+	for i := range bindings {
+		for _, member := range s.bindingMembers(bindings[i].Status.MemberAcknowledgements, now) {
+			if !seen[member.MemberID] {
+				seen[member.MemberID] = true
+				members = append(members, member)
+			}
+		}
+	}
+	return members
 }
 
 // patternMemberRetireAfter is how long a pattern member stays required after

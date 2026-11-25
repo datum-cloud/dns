@@ -7,6 +7,7 @@ import (
 	"errors"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	dnsv1alpha1 "go.miloapis.com/dns/api/v1alpha1"
@@ -153,6 +154,9 @@ type Reconciler struct {
 	queuedZones   sync.Map
 	zoneInputs    sync.Map
 	previousPlans sync.Map
+	// bindingsLabelled is set once every binding of the project carries the
+	// project label.
+	bindingsLabelled atomic.Bool
 }
 
 func (r *Reconciler) sourceReader() client.Reader {
@@ -197,7 +201,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		}
 		wait.Stop()
 	}
-	return r.reconcileProject(ctx, ns)
+	return r.reconcileProject(withListedBindings(ctx), ns)
 }
 
 func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {

@@ -19,14 +19,14 @@ import (
 )
 
 // A member's liveness is one lease per member, renewed by any verified
-// acknowledgement it sends. A manifest or binding row only proves the member
-// verified that revision, so it is rewritten when it changes or nears
-// memberRowLease, not on every renewal.
+// acknowledgement it sends. A manifest row only proves the member verified that
+// revision, so it is rewritten when it changes or nears publicationRowLease,
+// not on every renewal.
 const (
-	memberLeaseKey        = "validUntil"
-	memberLeaseRenewAfter = 15 * time.Second
-	memberRowLease        = 10 * time.Minute
-	memberRowRenewBefore  = 5 * time.Minute
+	memberLeaseKey            = "validUntil"
+	memberLeaseRenewAfter     = 15 * time.Second
+	publicationRowLease       = 10 * time.Minute
+	publicationRowRenewBefore = 5 * time.Minute
 )
 
 func memberLeaseName(region, shard, member string) string {
@@ -96,54 +96,21 @@ func (s *AckSink) loadMemberLeases(ctx context.Context, groups map[string]bool) 
 			if member.Role != dnsValueRegional && member.Role != dnsValueCluster {
 				continue
 			}
-			until, ok, err := s.readMemberLease(ctx, region, shard, member.MemberID)
+			var cm corev1.ConfigMap
+			err := s.Client.Get(ctx, client.ObjectKey{Namespace: s.Namespace, Name: memberLeaseName(region, shard, member.MemberID)}, &cm)
+			if apierrors.IsNotFound(err) {
+				continue
+			}
 			if err != nil {
 				failed = errors.Join(failed, fmt.Errorf("read member lease %s/%s: %w", group, member.MemberID, err))
-			} else if ok {
+				continue
+			}
+			if until, err := time.Parse(time.RFC3339Nano, cm.Data[memberLeaseKey]); err == nil {
 				leases[memberLeaseKeyFor(group, member.MemberID)] = until
 			}
 		}
 	}
 	return leases, failed
-}
-
-// loadServingLeases reads the leases of members of this sink's own group, of
-// any role. As for publications, a member whose lease is missing or unreadable
-// is left out, so its rows alone decide.
-func (s *AckSink) loadServingLeases(ctx context.Context, members []model.Member) (map[string]time.Time, error) {
-	group := s.Region + "/" + s.Shard
-	leases := map[string]time.Time{}
-	var failed error
-	for _, member := range members {
-		until, ok, err := s.readMemberLease(ctx, s.Region, s.Shard, member.MemberID)
-		if err != nil {
-			failed = errors.Join(failed, fmt.Errorf("read member lease %s/%s: %w", group, member.MemberID, err))
-		} else if ok {
-			leases[memberLeaseKeyFor(group, member.MemberID)] = until
-		}
-	}
-	return leases, failed
-}
-
-// readMemberLease reads one member's lease; ok is false when it has none.
-func (s *AckSink) readMemberLease(ctx context.Context, region, shard, member string) (until time.Time, ok bool, err error) {
-	var cm corev1.ConfigMap
-	err = s.Client.Get(ctx, client.ObjectKey{Namespace: s.Namespace, Name: memberLeaseName(region, shard, member)}, &cm)
-	if apierrors.IsNotFound(err) {
-		return time.Time{}, false, nil
-	}
-	if err != nil {
-		return time.Time{}, false, err
-	}
-	until, err = time.Parse(time.RFC3339Nano, cm.Data[memberLeaseKey])
-	return until, err == nil, nil
-}
-
-// memberLive reports whether the member's lease in group is current. A member
-// with no lease read is live, so its rows alone decide.
-func (s *AckSink) memberLive(group, member string, now time.Time) bool {
-	until, ok := s.leases[memberLeaseKeyFor(group, member)]
-	return !ok || until.After(now)
 }
 
 func manifestGroups(m *dnsv1alpha1.DNSPublicationManifest) map[string]bool {
@@ -162,26 +129,21 @@ func cutGroup(group string) (string, string) {
 	return group[:i], group[i+1:]
 }
 
-// memberRowChanged reports whether row says something the stored rows do not:
-// a new member, phase, fence or error, or a verification whose stored row is
-// close to lapsing. A manifest row leaves the binding fences at zero.
-func memberRowChanged(rows []dnsv1alpha1.DNSApplyAcknowledgement, row dnsv1alpha1.DNSApplyAcknowledgement, now time.Time) bool {
+// publicationRowChanged reports whether row says something the stored rows do
+// not: a new member, phase, fence or error, or a verification whose stored row
+// is close to lapsing.
+func publicationRowChanged(rows []dnsv1alpha1.DNSApplyAcknowledgement, row dnsv1alpha1.DNSApplyAcknowledgement, now time.Time) bool {
 	for _, stored := range rows {
 		if stored.MemberID != row.MemberID {
 			continue
 		}
-		if stored.Phase != row.Phase || stored.Error != row.Error || !sameFence(stored, row) {
+		if stored.Phase != row.Phase || stored.Revision != row.Revision || stored.WriterEpoch != row.WriterEpoch || stored.Error != row.Error {
 			return true
 		}
 		if row.Phase != string(model.AckVerified) {
 			return false
 		}
-		return stored.ValidUntil == nil || stored.ValidUntil.Sub(now) < memberRowRenewBefore
+		return stored.ValidUntil == nil || stored.ValidUntil.Sub(now) < publicationRowRenewBefore
 	}
 	return true
-}
-
-func sameFence(a, b dnsv1alpha1.DNSApplyAcknowledgement) bool {
-	return a.Revision == b.Revision && a.WriterEpoch == b.WriterEpoch && a.SnapshotRevision == b.SnapshotRevision &&
-		a.AccessEpoch == b.AccessEpoch && a.AccessSequence == b.AccessSequence
 }

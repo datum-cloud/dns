@@ -1,0 +1,179 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.19.0
+  name: zoneclaimsets.dns.networking.miloapis.com
+spec:
+  group: dns.networking.miloapis.com
+  names:
+    kind: ZoneClaimSet
+    listKind: ZoneClaimSetList
+    plural: zoneclaimsets
+    singular: zoneclaimset
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          ZoneClaimSet records which projects may serve names in one registered
+          domain. It is named for the registered domain and installed only in the
+          authoritative cluster.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: ZoneClaimSetSpec holds every claim in one registered domain.
+            properties:
+              entries:
+                description: Entries are in arrival order. Order decides which claim
+                  is first.
+                items:
+                  description: ZoneClaimEntry is one project's claim on a name and
+                    every name below it.
+                  properties:
+                    blockedBy:
+                      description: BlockedBy is the name of the other project's entry
+                        that blocks this one.
+                      maxLength: 253
+                      minLength: 1
+                      type: string
+                    name:
+                      description: |-
+                        Name is the zone name the entry claims. It accepts every name
+                        DNSZone.spec.domainName accepts, so any accounting record can be imported.
+                      maxLength: 253
+                      minLength: 1
+                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)+$
+                      type: string
+                    operatorSeeded:
+                      description: |-
+                        OperatorSeeded marks an entry that no zone can bind, used to keep a name
+                        out of reach.
+                      type: boolean
+                    preexistingOverlap:
+                      description: |-
+                        PreexistingOverlap marks an entry imported from the per-name accounting
+                        records that already overlapped another project's entry. Two such
+                        entries never block each other.
+                      type: boolean
+                    project:
+                      description: |-
+                        Project is empty only on an operator-seeded entry, which blocks every
+                        project.
+                      properties:
+                        name:
+                          maxLength: 253
+                          minLength: 1
+                          type: string
+                        organization:
+                          maxLength: 253
+                          type: string
+                      required:
+                      - name
+                      type: object
+                    reason:
+                      description: ZoneClaimReason says why an entry is Contested.
+                      enum:
+                      - ClaimedByAnotherProject
+                      - ParentClaimedByAnotherProject
+                      - ChildClaimedByAnotherProject
+                      - DuplicateZoneInProject
+                      type: string
+                    since:
+                      description: Since is when the entry arrived or last changed
+                        state.
+                      format: date-time
+                      type: string
+                    state:
+                      description: ZoneClaimState is the outcome of evaluating a claim
+                        set for one entry.
+                      enum:
+                      - Active
+                      - Reserved
+                      - Contested
+                      type: string
+                    zone:
+                      description: |-
+                        Zone is the zone bound to the entry. An Active entry always has one, a
+                        Reserved entry never does, and a Contested entry may have lost it.
+                      properties:
+                        cluster:
+                          description: |-
+                            Cluster is the multicluster cluster name of the zone's project control
+                            plane, without a leading slash.
+                          maxLength: 253
+                          minLength: 1
+                          pattern: ^[^/]
+                          type: string
+                        name:
+                          maxLength: 253
+                          minLength: 1
+                          type: string
+                        namespace:
+                          maxLength: 63
+                          minLength: 1
+                          type: string
+                        uid:
+                          description: |-
+                            UID is empty on an entry imported from the per-name accounting records
+                            until its zone first binds it.
+                          maxLength: 128
+                          minLength: 1
+                          type: string
+                      required:
+                      - cluster
+                      - name
+                      - namespace
+                      type: object
+                  required:
+                  - name
+                  - since
+                  - state
+                  type: object
+                  x-kubernetes-validations:
+                  - message: project is set exactly when the entry is not operator-seeded
+                    rule: has(self.project) != (has(self.operatorSeeded) && self.operatorSeeded)
+                  - message: an operator-seeded entry is always Reserved
+                    rule: '!(has(self.operatorSeeded) && self.operatorSeeded) || self.state
+                      == ''Reserved'''
+                  - message: an Active entry has a zone
+                    rule: self.state != 'Active' || has(self.zone)
+                  - message: a Reserved entry has no zone
+                    rule: self.state != 'Reserved' || !has(self.zone)
+                  - message: reason is set exactly when the entry is Contested
+                    rule: has(self.reason) == (self.state == 'Contested')
+                  - message: blockedBy is set exactly when another project's entry
+                      blocks this one
+                    rule: has(self.blockedBy) == (has(self.reason) && self.reason
+                      in ['ClaimedByAnotherProject', 'ParentClaimedByAnotherProject',
+                      'ChildClaimedByAnotherProject'])
+                maxItems: 1024
+                type: array
+                x-kubernetes-list-type: atomic
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources: {}

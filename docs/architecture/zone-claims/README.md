@@ -121,15 +121,15 @@ Entry fields:
 | Field | Meaning |
 |-------|---------|
 | `name` | The zone name the entry claims, with its subtree. |
-| `project` | The project that owns the entry, and its organization from the `Project`'s `spec.ownerRef`. |
-| `zone` | The zone bound to the entry. Empty while `Reserved`. |
+| `project` | The project that owns the entry, and its organization from the `Project`'s `spec.ownerRef`. Empty only on an `operatorSeeded` entry. |
+| `zone` | The zone bound to the entry. Always set while `Active`, never while `Reserved`, and empty on a `Contested` entry that lost its zone while `Reserved`. `zone.uid` is empty on an entry imported from accounting ConfigMaps until its zone binds it. |
 | `grants` | Names in the subtree this entry grants to other projects. |
 | `grantedBy` | Set when the entry is `Active` only because of an ancestor's grant. |
 | `state` | `Active`, `Reserved`, or `Contested`. Derived by [evaluation](#evaluating-a-claim-set). |
-| `reason`, `blockedBy` | Why a `Contested` entry is blocked, and the name of the entry blocking it. |
+| `reason`, `blockedBy` | Why a `Contested` entry is blocked, and, when another project's entry blocks it, that entry's name. |
 | `reservedUntil` | When a `Reserved` entry expires. |
 | `preexistingOverlap` | Set on entries imported from ConfigMaps that already overlapped another project's entry. Kept for as long as the entry exists, including while it's `Reserved`. See [Turning on claim sets](#turning-on-claim-sets). |
-| `operatorSeeded` | An entry no zone can bind, used to keep a name out of reach. |
+| `operatorSeeded` | An entry no zone can bind, used to keep a name out of reach. Always `Reserved`. |
 | `release` | A request from support to release the entry. Consumed by [normalization](#evaluating-a-claim-set). |
 | `lastRelease` | Who released the entry, why, and when. Kept for audit. |
 | `handedOverTo` | Set on a grantor's entry once its handover is applied. See [Grants](#grants). |
@@ -171,7 +171,9 @@ order and keep a list of blockers:
 
 1. An entry with `handedOverTo` is `Contested` with reason `HandedOver`, and
    doesn't join the blockers.
-2. For each other entry `e`:
+2. An `operatorSeeded` entry is `Reserved`, joins the blockers, and skips the
+   rest of these steps.
+3. For each other entry `e`:
    1. If an earlier `Active` entry from the same project has the same name,
       `e` is `Contested` with reason `DuplicateZoneInProject`.
    2. Otherwise, find the earliest blocker `b` that overlaps `e`, belongs to a
@@ -181,7 +183,7 @@ order and keep a list of blockers:
       `ClaimedByAnotherProject`, `ParentClaimedByAnotherProject`, or
       `ChildClaimedByAnotherProject`.
    4. Otherwise, `e` is `Active`, or `Reserved` if it has no zone, and joins the
-      blockers. `operatorSeeded` entries always join the blockers.
+      blockers.
 
 A grant on blocker `b` permits `e` when `e.project` is the grantee and `e.name`
 equals or is under the granted name.
@@ -213,9 +215,10 @@ in `ensureZoneClaim`:
 2. Get the claim set with the uncached reader. If it doesn't exist, build it
    from any accounting ConfigMaps for that registered domain (see
    [Turning on claim sets](#turning-on-claim-sets)) and create it.
-3. Find the zone's entry by zone UID. If there isn't one, bind the zone to this
-   project's `Reserved` entry for the same name, if there is one. Otherwise,
-   append a new entry.
+3. Find the zone's entry by zone UID, or by cluster, namespace, and name on an
+   imported entry with no UID yet, and record the UID. If there isn't one,
+   bind the zone to this project's `Reserved` entry for the same name, if
+   there is one. Otherwise, append a new entry.
 4. Copy the zone's `spec.grants` to its entry, skipping a self-grant on an
    entry with `handedOverTo`.
 5. Run `normalize` and `evaluate`, and update the set with the resourceVersion
@@ -402,6 +405,8 @@ builds the set from them:
   The project and organization are looked up from the cluster.
 - An `owner` that doesn't parse is an operator-seeded claim and becomes an
   `operatorSeeded` entry.
+- Imported entries have no `zone.uid`. Each zone records its UID the first
+  time it binds its entry.
 - Imported entries from different projects that overlap are all marked
   `preexistingOverlap`, so a parent and a child that both serve before claim
   sets are turned on keep serving. A metric counts these entries for review. An

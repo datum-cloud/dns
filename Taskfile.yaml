@@ -114,6 +114,7 @@ tasks:
       - task: generate
       - task: manifests
       - task: generate:verify
+      - task: test:crd-placement
       - task: fmt
       - task: vet
       - task: lint
@@ -167,6 +168,7 @@ tasks:
     deps: [tools:controller-gen]
     cmds:
       - '{{.TOOL_DIR}}/controller-gen rbac:roleName=manager-role crd webhook paths="./..." output:crd:artifacts:config=config/crd/bases output:webhook:artifacts:config=config/webhook'
+      - mv config/crd/bases/dns.networking.miloapis.com_zoneclaimsets.yaml config/crd-authoritative/
 
   generate:verify:
     desc: Regenerate code and manifests, then fail when the committed files differ
@@ -202,7 +204,14 @@ tasks:
     desc: Verify generated files and run the full Go test suite
     cmds:
       - task: generate:verify
+      - task: test:crd-placement
       - task: test
+
+  test:crd-placement:
+    desc: Fail when an authoritative-only CRD would reach a tenant-facing control plane
+    deps: [tools:kustomize]
+    cmds:
+      - hack/check-crd-placement.sh {{.TOOL_DIR}}/kustomize
 
   test:dnsdist-udp:
     desc: Test the generated DNSdist rules with the serving DNSdist image

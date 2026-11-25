@@ -11,6 +11,7 @@ cd "$REPO_ROOT"
 readonly GENERATED_PATHS=(
   ':(glob)**/zz_generated.*'
   config/crd/bases
+  config/crd-authoritative
   config/rbac/role.yaml
   config/webhook/manifests.yaml
 )

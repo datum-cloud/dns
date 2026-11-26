@@ -2,6 +2,7 @@ package controlplane
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -9,7 +10,9 @@ import (
 	"go.miloapis.com/dns/internal/internaldns/model"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
 
 func TestTerminatingInputsWithdrawRecordsAndRetainFences(t *testing.T) {
@@ -74,11 +77,28 @@ func TestCommittedUntargetedTombstoneCompletes(t *testing.T) {
 	if len(outboxes.Items) != 0 {
 		t.Fatalf("untargeted tombstone unexpectedly has a delivery path: %d", len(outboxes.Items))
 	}
-	if !r.tombstoneAcknowledged(ctx, owner) {
-		t.Fatal("committed untargeted tombstone did not complete")
+	if acknowledged, err := r.tombstoneAcknowledged(ctx, owner); err != nil || !acknowledged {
+		t.Fatalf("committed untargeted tombstone did not complete: %v", err)
 	}
 	owner.Spec.WriterEpoch++
-	if !r.tombstoneAcknowledged(ctx, owner) {
-		t.Fatal("takeover lost the committed zero-target withdrawal")
+	if acknowledged, err := r.tombstoneAcknowledged(ctx, owner); err != nil || !acknowledged {
+		t.Fatalf("takeover lost the committed zero-target withdrawal: %v", err)
+	}
+}
+
+func TestTombstoneVerdictReadErrorIsReturned(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := addReferenceStateToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	unavailable := errors.New("publication store unavailable")
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithInterceptorFuncs(interceptor.Funcs{Get: func(context.Context, client.WithWatch, client.ObjectKey, client.Object, ...client.GetOption) error {
+		return unavailable
+	}}).Build()
+	r := &Reconciler{Client: cl, Options: ReconcilerOptions{PlatformNamespace: "platform"}}
+	owner := &dnsv1alpha1.DNSPublicationOwnership{ObjectMeta: metav1.ObjectMeta{Name: "owner", Namespace: "platform"}, Spec: dnsv1alpha1.DNSPublicationOwnershipSpec{ZoneUID: "zone-a", WriterEpoch: 1, ActiveManifestName: "tombstone"}}
+	acknowledged, err := r.tombstoneAcknowledged(context.Background(), owner)
+	if !errors.Is(err, unavailable) || acknowledged {
+		t.Fatalf("a failed read of the tombstone returned (%v, %v); want the read's error, so the zone's key is retried", acknowledged, err)
 	}
 }

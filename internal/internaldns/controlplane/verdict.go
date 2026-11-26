@@ -24,7 +24,6 @@ import (
 // lease it holds.
 type ManifestChanges func(ctx context.Context, selector labels.Selector, notify func(previous, current *dnsv1alpha1.DNSPublicationManifest)) error
 
-// zoneUIDIndex finds a zone by its UID.
 const zoneUIDIndex = "private-dns.zone-uid"
 
 func zoneUID(o client.Object) []string { return []string{string(o.GetUID())} }

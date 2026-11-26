@@ -30,7 +30,6 @@ import (
 
 const manifestNamespace = "internal-dns-system"
 
-// unreachable is a platform API that no test reaches.
 var unreachable = &rest.Config{Host: "https://platform.invalid"}
 
 type heardManifest struct {

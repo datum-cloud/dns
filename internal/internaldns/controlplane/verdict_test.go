@@ -38,7 +38,6 @@ func newPerZoneStoreHarness(t *testing.T) (*perZoneHarness, *dnsv1alpha1.DNSZone
 	return h, zone
 }
 
-// recordedQueue records the keys a source queues.
 type recordedQueue struct {
 	workqueue.TypedRateLimitingInterface[reconcile.Request]
 	mu   sync.Mutex
@@ -59,8 +58,6 @@ func (q *recordedQueue) take() []reconcile.Request {
 	return keys
 }
 
-// watchVerdicts starts the zone controller's verdict source on a queue of its
-// own.
 func (h *perZoneHarness) watchVerdicts() *recordedQueue {
 	h.t.Helper()
 	q := &recordedQueue{}

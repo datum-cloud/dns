@@ -23,8 +23,6 @@ const (
 	publicationStoreRegional = "jetstream-regional"
 )
 
-// publicationStoreName names where this control plane keeps its publication
-// records.
 func (c Config) publicationStoreName() string {
 	switch {
 	case len(c.Regions) > 0:

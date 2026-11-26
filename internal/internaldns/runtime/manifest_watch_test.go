@@ -19,9 +19,13 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/rest"
+	"k8s.io/utils/ptr"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/config"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 )
 
 const manifestNamespace = "internal-dns-system"
@@ -44,6 +48,29 @@ func TestWatchManifestsHearsThePublicationStore(t *testing.T) {
 		t.Fatalf("with a publication store: platform cache %v, %v; want none", platformCache, err)
 	}
 	expectVerdictHeard(t, store, hearProjectA(t, changes))
+}
+
+func TestPerZoneProjectReconcilerSetsUpWithTheStoresChanges(t *testing.T) {
+	scheme := testScheme(t)
+	store := pubstore.New(fake.NewClientBuilder().WithScheme(scheme).Build(), pubstore.NewMemoryKV())
+	if err := store.Start(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	cfg := Config{PlatformNamespace: manifestNamespace, PerZoneReconcile: true}
+	changes, _, err := watchManifests(t.Context(), cfg, store, unreachable, scheme)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mgr, err := ctrl.NewManager(unreachable, ctrl.Options{Scheme: scheme, Metrics: metricsserver.Options{BindAddress: "0"}, HealthProbeBindAddress: "0",
+		Controller: config.Controller{SkipNameValidation: ptr.To(true)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	project := ProjectConfig{Name: "project-a", ProjectUID: "project-a", Namespace: "project"}
+	r := &controlplane.Reconciler{Scheme: scheme, Options: cfg.reconcilerOptions(project, projectShared{manifestChanges: changes})}
+	if err := r.SetupWithManager(mgr); err != nil {
+		t.Fatalf("a per-zone project's reconciler did not set up: %v", err)
+	}
 }
 
 func TestWatchManifestsHearsTheAPIServerWithoutAPublicationStore(t *testing.T) {

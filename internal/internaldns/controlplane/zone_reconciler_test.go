@@ -11,6 +11,7 @@ import (
 	dnsv1alpha1 "go.miloapis.com/dns/api/v1alpha1"
 	"go.miloapis.com/dns/internal/internaldns/model"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -48,7 +49,7 @@ func newPerZoneHarness(t *testing.T) (*perZoneHarness, *dnsv1alpha1.DNSZone) {
 	contrib.Namespace = "project"
 	contrib.Generation = 1
 	access := &dnsv1alpha1.DNSResolverAccessBinding{ObjectMeta: metav1.ObjectMeta{Name: "prod-east", Namespace: "project", UID: "access-east"}, Spec: dnsv1alpha1.DNSResolverAccessBindingSpec{ContextRef: dnsv1alpha1.DNSObjectReference{Name: "prod", UID: "vpc-a"}, Region: "east", DestinationAddress: "fd53::11"}}
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(network, zone, assoc, reg, contrib, access).WithStatusSubresource(&dnsv1alpha1.DNSResolverContext{}, &dnsv1alpha1.DNSResolverAccessBinding{}, &dnsv1alpha1.DNSZoneAssociation{}, &dnsv1alpha1.DNSRegistration{}, &dnsv1alpha1.DNSRecordContribution{}, &dnsv1alpha1.DNSRecordSet{}, &dnsv1alpha1.DNSZone{}, &dnsv1alpha1.DNSPublicationManifest{}).Build()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(network, zone, assoc, reg, contrib, access).WithStatusSubresource(&dnsv1alpha1.DNSResolverContext{}, &dnsv1alpha1.DNSResolverAccessBinding{}, &dnsv1alpha1.DNSZoneAssociation{}, &dnsv1alpha1.DNSRegistration{}, &dnsv1alpha1.DNSRecordContribution{}, &dnsv1alpha1.DNSRecordSet{}, &dnsv1alpha1.DNSZone{}, &dnsv1alpha1.DNSPublicationManifest{}).WithIndex(&dnsv1alpha1.DNSZone{}, zoneUIDIndex, zoneUID).Build()
 	r := &Reconciler{Client: c, Scheme: s, zoneQueue: make(chan event.GenericEvent, 64), Options: ReconcilerOptions{ProjectUID: "project-a", ProjectNamespace: "project", PlatformNamespace: "internal-dns-system", Identity: "compiler-a", ServingRegions: []ServingRegion{{Region: "east", Shard: "s1"}}, AddressAllocator: testAllocator{}, Now: func() time.Time { return now }, PerZoneReconcile: true}}
 	return &perZoneHarness{t: t, ctx: context.Background(), c: c, r: r}, zone
 }
@@ -221,5 +222,38 @@ func TestPerZoneProjectPassQueuesOnlyChangedZones(t *testing.T) {
 	h.run(projectQueueKey)
 	if n := len(h.r.zoneQueue); n != 1 {
 		t.Fatalf("resync queued %d zones, want the unchanged zone once", n)
+	}
+}
+
+func TestPerZoneDeletedZoneThatNoReplicaVerifiesStopsRetryingEverySecond(t *testing.T) {
+	h, zone := newPerZoneHarness(t)
+	h.r.Options.LeaseDuration = 2 * time.Minute
+	h.settle()
+	if err := h.c.Delete(h.ctx, zone); err != nil {
+		t.Fatal(err)
+	}
+	deleted := h.r.Options.Now()
+	clock := deleted
+	h.r.Options.Now = func() time.Time { return clock }
+
+	passes := 0
+	var last time.Duration
+	for clock.Sub(deleted) < time.Hour {
+		res := h.run(zoneQueuePrefix + zone.Name)
+		passes++
+		var current dnsv1alpha1.DNSZone
+		if err := h.c.Get(h.ctx, client.ObjectKeyFromObject(zone), &current); apierrors.IsNotFound(err) {
+			return
+		} else if err != nil {
+			t.Fatal(err)
+		}
+		if res.RequeueAfter <= 0 {
+			return
+		}
+		last = res.RequeueAfter
+		clock = clock.Add(res.RequeueAfter)
+	}
+	if last <= staleAssociationRetry {
+		t.Fatalf("an hour after deletion with no replica verifying, the zone still holds its finalizer and its key ran %d times, the last requeue after %v", passes, last)
 	}
 }

@@ -136,10 +136,11 @@ type PublicationStore struct {
 	// plane publishes while every other region runs its own; see OnlyRegions.
 	regionsOnly map[string]bool
 
-	mu      *sync.RWMutex
-	index   map[string]indexed
-	pending map[string]bool
-	synced  chan struct{}
+	mu          *sync.RWMutex
+	index       map[string]indexed
+	pending     map[string]bool
+	synced      chan struct{}
+	subscribers *subscribers
 }
 
 const regionLabel = "internal-dns.miloapis.com/region"
@@ -155,7 +156,7 @@ func New(api client.Client, kv KV) *PublicationStore {
 // so committing a zone needs only the home broker. Buckets are keyed by physical bucket, so regions that share
 // a broker name the same one.
 func NewRegional(api client.Client, home string, buckets map[string]KV, regions map[string]string) *PublicationStore {
-	return &PublicationStore{Client: api, home: home, buckets: buckets, regions: regions, now: time.Now, mu: &sync.RWMutex{}, index: map[string]indexed{}, pending: map[string]bool{}, synced: make(chan struct{})}
+	return &PublicationStore{Client: api, home: home, buckets: buckets, regions: regions, now: time.Now, mu: &sync.RWMutex{}, index: map[string]indexed{}, pending: map[string]bool{}, synced: make(chan struct{}), subscribers: &subscribers{}}
 }
 
 // regionsKey records which regions' control plane owns a bucket. It matches no
@@ -411,37 +412,47 @@ func kindForKey(key string) *storedKind {
 	return nil
 }
 
-// apply records a bucket value in the index. A settled outbox is kept without
-// its payload, because nothing sends it again; a listed settled outbox
-// therefore carries no payload.
 func (s *PublicationStore) apply(bucket, key string, revision uint64, value []byte) {
 	kind := kindForKey(key)
 	if kind == nil || !kind.indexed {
 		return
 	}
-	var obj client.Object
-	if value != nil {
-		obj = kind.newObj()
-		if err := decodeStored(value, revision, obj); err != nil {
-			return
-		}
-		if out, ok := obj.(*dnsv1.DNSTransportOutbox); ok && settled(out) {
-			out.Spec.Payload = nil
-		}
+	obj, ok := indexedObject(kind, revision, value)
+	if !ok {
+		return
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if current, ok := s.index[key]; ok && current.bucket == bucket && current.revision >= revision {
+	current, held := s.index[key]
+	if held && current.bucket == bucket && current.revision >= revision {
 		return
 	}
 	if obj == nil {
-		if current, ok := s.index[key]; ok && current.bucket != bucket {
-			return
+		if !held || current.bucket == bucket {
+			delete(s.index, key)
 		}
-		delete(s.index, key)
 		return
 	}
 	s.index[key] = indexed{bucket: bucket, revision: revision, obj: obj}
+	s.subscribers.publish(current.obj, obj)
+}
+
+// indexedObject decodes a bucket value as the index keeps it, nil for a
+// deleted record. A settled outbox is kept without its payload, because
+// nothing sends it again; a listed settled outbox therefore carries no
+// payload.
+func indexedObject(kind *storedKind, revision uint64, value []byte) (client.Object, bool) {
+	if value == nil {
+		return nil, true
+	}
+	obj := kind.newObj()
+	if err := decodeStored(value, revision, obj); err != nil {
+		return nil, false
+	}
+	if out, ok := obj.(*dnsv1.DNSTransportOutbox); ok && settled(out) {
+		out.Spec.Payload = nil
+	}
+	return obj, true
 }
 
 func decodeStored(value []byte, revision uint64, obj client.Object) error {

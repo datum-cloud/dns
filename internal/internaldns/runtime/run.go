@@ -28,6 +28,7 @@ import (
 	"golang.org/x/time/rate"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -153,14 +154,7 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 		return fmt.Errorf("create uncached platform client: %w", err)
 	}
 	platformClient = &deadlineClient{Client: platformClient, Timeout: cfg.PlatformKubeAPI.requestTimeout()}
-	storeName := publicationStoreKubernetes
-	if cfg.PublicationStore != nil {
-		storeName = publicationStoreJetStream
-	}
-	if len(cfg.Regions) > 0 {
-		storeName = publicationStoreRegional
-	}
-	if err := claimPublicationStore(ctx, platformClient, cfg.PlatformNamespace, storeName, cfg.SwitchPublicationStore); err != nil {
+	if err := claimPublicationStore(ctx, platformClient, cfg.PlatformNamespace, cfg.publicationStoreName(), cfg.SwitchPublicationStore); err != nil {
 		return err
 	}
 	var publicationStore *pubstore.PublicationStore
@@ -171,6 +165,10 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 		}
 		defer closeStore()
 		publicationStore, platformClient = store, store
+	}
+	manifestChanges, platformCache, err := watchManifests(ctx, cfg, publicationStore, platformREST, scheme)
+	if err != nil {
+		return err
 	}
 	regionalPrefixes, err := cfg.regionalPrefixes()
 	if err != nil {
@@ -196,8 +194,14 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 	// taking zone leases before the leases are released.
 	var stopping atomic.Bool
 	var discoveryReader client.Reader
-	passSlots := make(chan struct{}, maxConcurrentProjectPasses)
-	zoneSlots := make(chan struct{}, maxConcurrentZoneCompiles)
+	shared := projectShared{identity: identity, allocator: allocator, regions: regions, stopping: stopping.Load, manifestChanges: manifestChanges,
+		passSlots: make(chan struct{}, maxConcurrentProjectPasses), zoneSlots: make(chan struct{}, maxConcurrentZoneCompiles),
+		verifyProject: func(ctx context.Context, name string, uid types.UID) error {
+			if discoveryReader == nil {
+				return nil
+			}
+			return verifyProjectIdentity(ctx, discoveryReader, name, uid)
+		}}
 	// Each project manager lists and watches its project's DNS resources as it
 	// starts, so pace starts rather than open every watch in the same second.
 	projectStarts := rate.NewLimiter(rate.Limit(10), 10)
@@ -235,26 +239,7 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 			// Access decisions use the source API. The optional zone input cache
 			// is supplied by SetupWithManager and guarded per writer epoch.
 			routed := &RoutingClient{Client: platformClient, Source: direct, PlatformNamespace: cfg.PlatformNamespace}
-			reconciler := &controlplane.Reconciler{Client: routed, APIReader: direct, Scheme: scheme, Options: controlplane.ReconcilerOptions{
-				ProjectUID: project.ProjectUID, PassSlots: passSlots, Stopping: stopping.Load,
-				VerifyProjectIdentity: func(ctx context.Context) error {
-					if discoveryReader == nil {
-						return nil
-					}
-					return verifyProjectIdentity(ctx, discoveryReader, project.Name, project.ProjectUID)
-				},
-				ProjectNamespace: project.Namespace, PlatformNamespace: cfg.PlatformNamespace,
-				Region: cfg.Region, Shard: cfg.Shard, Identity: identity,
-				LeaseDuration:            cfg.ownershipLease(),
-				AddressAllocator:         allocator,
-				RequireSuppliedAddresses: cfg.RequireSuppliedAddresses,
-				PrivateZoneClassName:     cfg.PrivateZoneClassName, ServingRegions: regions, Regions: cfg.Regions,
-				LocalInputs:           cfg.ProjectDiscovery != nil && cfg.ProjectDiscovery.Local,
-				ManagedDomainSuffixes: cfg.ManagedDomainSuffixes,
-				PerZoneReconcile:      cfg.PerZoneReconcile,
-				CachedZoneInputs:      cfg.CachedZoneInputs,
-				ZoneSlots:             zoneSlots,
-			}}
+			reconciler := &controlplane.Reconciler{Client: routed, APIReader: direct, Scheme: scheme, Options: cfg.reconcilerOptions(project, shared)}
 			if err := reconciler.SetupWithManager(mgr); err != nil {
 				return fmt.Errorf("setup reconciler: %w", err)
 			}
@@ -362,6 +347,9 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 	if publicationStore != nil {
 		go retryLoop(ctx, pubstore.CollectInterval, loopID{Loop: "publication store collect"}, live, publicationStore.Collect, errCh)
 	}
+	if platformCache != nil {
+		go func() { errCh <- platformCache.Start(ctx) }()
+	}
 	startProjectSources(ctx, projects)
 	if discovery == nil {
 		discovered.done()
@@ -439,6 +427,38 @@ func whileLeading(step func(context.Context) error, lease *platform.RegionLease)
 			return nil
 		}
 		return step(ctx)
+	}
+}
+
+type projectShared struct {
+	identity        string
+	allocator       controlplane.AddressAllocator
+	regions         []controlplane.ServingRegion
+	passSlots       chan struct{}
+	zoneSlots       chan struct{}
+	stopping        func() bool
+	verifyProject   func(ctx context.Context, name string, uid types.UID) error
+	manifestChanges controlplane.ManifestChanges
+}
+
+func (c Config) reconcilerOptions(project ProjectConfig, shared projectShared) controlplane.ReconcilerOptions {
+	return controlplane.ReconcilerOptions{
+		ProjectUID: project.ProjectUID, PassSlots: shared.passSlots, Stopping: shared.stopping,
+		VerifyProjectIdentity: func(ctx context.Context) error {
+			return shared.verifyProject(ctx, project.Name, project.ProjectUID)
+		},
+		ProjectNamespace: project.Namespace, PlatformNamespace: c.PlatformNamespace,
+		Region: c.Region, Shard: c.Shard, Identity: shared.identity,
+		LeaseDuration:            c.ownershipLease(),
+		AddressAllocator:         shared.allocator,
+		RequireSuppliedAddresses: c.RequireSuppliedAddresses,
+		PrivateZoneClassName:     c.PrivateZoneClassName, ServingRegions: shared.regions, Regions: c.Regions,
+		LocalInputs:           c.ProjectDiscovery != nil && c.ProjectDiscovery.Local,
+		ManagedDomainSuffixes: c.ManagedDomainSuffixes,
+		PerZoneReconcile:      c.PerZoneReconcile,
+		CachedZoneInputs:      c.CachedZoneInputs,
+		ZoneSlots:             shared.zoneSlots,
+		ManifestChanges:       shared.manifestChanges,
 	}
 }
 

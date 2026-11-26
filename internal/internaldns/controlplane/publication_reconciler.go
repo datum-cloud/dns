@@ -603,7 +603,7 @@ func (r *Reconciler) compileZone(ctx context.Context, z *dnsv1alpha1.DNSZone, ow
 			session.state.accepted = accepted
 			session.state.liveCompiled = true
 		}
-		return r.tombstoneAcknowledged(ctx, own), nil
+		return r.tombstoneAcknowledged(ctx, own)
 	}
 	revision := own.Spec.NextRevision
 	if revision <= 0 {
@@ -1096,21 +1096,21 @@ func (r *Reconciler) patchInputStatuses(ctx context.Context, zone *dnsv1alpha1.D
 	return nil
 }
 
-func (r *Reconciler) tombstoneAcknowledged(ctx context.Context, o *dnsv1alpha1.DNSPublicationOwnership) bool {
+func (r *Reconciler) tombstoneAcknowledged(ctx context.Context, o *dnsv1alpha1.DNSPublicationOwnership) (bool, error) {
 	if o.Spec.ActiveManifestName == "" {
-		return false
+		return false, nil
 	}
 	var manifest dnsv1alpha1.DNSPublicationManifest
 	if err := r.Get(ctx, client.ObjectKey{Namespace: r.Options.PlatformNamespace, Name: o.Spec.ActiveManifestName}, &manifest); err != nil {
-		return false
+		return false, err
 	}
 	c := apimeta.FindStatusCondition(manifest.Status.Conditions, "Published")
 	if !manifest.Spec.Tombstone || manifest.Spec.ZoneRef.UID != o.Spec.ZoneUID || manifest.Spec.WriterEpoch > o.Spec.WriterEpoch {
-		return false
+		return false, nil
 	}
 	// Zero targets are safe only after this manifest became the ownership commit
 	// pointer. publicationTargets retains prior targets for every withdrawal.
-	return len(manifest.Spec.ServingTargets) == 0 || (c != nil && c.Status == metav1.ConditionTrue)
+	return len(manifest.Spec.ServingTargets) == 0 || (c != nil && c.Status == metav1.ConditionTrue), nil
 }
 
 func (r *Reconciler) createImmutable(ctx context.Context, desired client.Object) error {

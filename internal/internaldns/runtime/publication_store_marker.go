@@ -23,6 +23,16 @@ const (
 	publicationStoreRegional = "jetstream-regional"
 )
 
+func (c Config) publicationStoreName() string {
+	switch {
+	case len(c.Regions) > 0:
+		return publicationStoreRegional
+	case c.PublicationStore != nil:
+		return publicationStoreJetStream
+	}
+	return publicationStoreKubernetes
+}
+
 // claimPublicationStore refuses to start a control plane whose publication
 // store differs from the one the platform records as active. Leases live in
 // the store, so replicas on different stores would each hold every lease and

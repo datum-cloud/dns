@@ -73,6 +73,9 @@ type ReconcilerOptions struct {
 	// Stopping, when set and true, stops the reconciler taking or renewing
 	// zone leases so the process can release them before it exits.
 	Stopping func() bool
+	// ManifestChanges wakes a deleted zone's key when its tombstone's verdict
+	// changes. Per-zone reconcile requires it.
+	ManifestChanges ManifestChanges
 }
 
 type ServingRegion struct {
@@ -236,8 +239,16 @@ const zoneWorkers = 4
 // setupPerZone watches record inputs per zone. The project pass keeps every
 // project-wide input and hands zones to the zone keys through zoneQueue.
 func (r *Reconciler) setupPerZone(mgr ctrl.Manager, name string, project handler.EventHandler) error {
+	if r.Options.ManifestChanges == nil {
+		return errors.New("per-zone reconcile needs ManifestChanges, or a deleted zone waits for the project pass's resync")
+	}
 	if r.Options.CachedZoneInputs {
 		if err := r.setupInputIndexes(mgr); err != nil {
+			return err
+		}
+	}
+	if r.Options.ProjectNamespace == "" {
+		if err := mgr.GetFieldIndexer().IndexField(context.Background(), &dnsv1alpha1.DNSZone{}, zoneUIDIndex, zoneUID); err != nil {
 			return err
 		}
 	}
@@ -254,6 +265,7 @@ func (r *Reconciler) setupPerZone(mgr ctrl.Manager, name string, project handler
 		Watches(&dnsv1alpha1.DNSZoneAssociation{}, project).Watches(&dnsv1alpha1.DNSNamingPolicy{}, project).
 		Watches(&dnsv1alpha1.DNSResolverContext{}, project).Watches(&dnsv1alpha1.DNSResolverAccessBinding{}, project).
 		WatchesRawSource(source.Channel(r.zoneQueue, zoneEvents{keys: zoneItself})).
+		WatchesRawSource(r.verdictSource(mgr.GetCache())).
 		Complete(r)
 }
 

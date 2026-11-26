@@ -309,8 +309,8 @@ func (r *Reconciler) reconcileZone(ctx context.Context, ns, name string) (ctrl.R
 		return ctrl.Result{}, nil
 	}
 	if !z.DeletionTimestamp.IsZero() {
-		// The tombstone was just published; check for its acknowledgement.
-		return ctrl.Result{RequeueAfter: staleAssociationRetry}, nil
+		// verdictSource wakes the key when a replica verifies the tombstone.
+		return ctrl.Result{}, nil
 	}
 	if pending.IsZero() {
 		return ctrl.Result{}, nil

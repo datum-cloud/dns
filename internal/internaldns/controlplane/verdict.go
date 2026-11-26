@@ -18,7 +18,10 @@ import (
 
 // ManifestChanges calls notify with each change of a publication manifest
 // whose labels selector matches, until ctx ends. previous is nil for a
-// manifest first seen. notify must not change either manifest.
+// manifest first seen. notify must not change either manifest. An informer
+// first replays the manifests it holds; the publication store starts with the
+// next change. Either way, the project's first pass queues each zone whose
+// lease it holds.
 type ManifestChanges func(ctx context.Context, selector labels.Selector, notify func(previous, current *dnsv1alpha1.DNSPublicationManifest)) error
 
 // zoneUIDIndex finds a zone by its UID.
@@ -63,6 +66,7 @@ func (r *Reconciler) tombstoneZone(ctx context.Context, zones client.Reader, m *
 		return reconcile.Request{}, false
 	}
 	if len(found.Items) != 1 {
+		ctrl.LoggerFrom(ctx).V(1).Info("no single zone for a tombstone; the project pass's resync reconciles it", "manifest", m.Name, "zoneUID", m.Spec.ZoneRef.UID, "zones", len(found.Items))
 		return reconcile.Request{}, false
 	}
 	return zoneRequest(found.Items[0].Namespace, found.Items[0].Name), true

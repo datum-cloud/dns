@@ -4,6 +4,7 @@ package pubstore
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -54,6 +55,38 @@ func TestManifestSubscriberHearsAnotherReplicasVerdict(t *testing.T) {
 	if !apimeta.IsStatusConditionTrue(verdict.current.Status.Conditions, "Published") {
 		t.Fatalf("verdict heard without Published=True: %v", verdict.current.Status.Conditions)
 	}
+}
+
+func TestManifestSubscriberLeavesWhenItsContextEnds(t *testing.T) {
+	store, _, _ := newStore(t)
+	ctx, cancel := context.WithCancel(t.Context())
+	var calls atomic.Int32
+	if err := store.SubscribeManifests(ctx, labels.Everything(), func(_, _ *dnsv1.DNSPublicationManifest) { calls.Add(1) }); err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	deadline := time.Now().Add(5 * time.Second)
+	for subscriberCount(store) != 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the subscriber stayed subscribed after its context ended")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	live := subscribeHeard(t, store, labels.Everything())
+	if err := store.Create(t.Context(), &dnsv1.DNSPublicationManifest{ObjectMeta: metav1.ObjectMeta{Name: "after-cancel", Namespace: "platform"}}); err != nil {
+		t.Fatal(err)
+	}
+	assertHeard(t, receiveChange(t, live), "after-cancel", "")
+	if n := calls.Load(); n != 0 {
+		t.Fatalf("a subscriber whose context ended heard %d changes", n)
+	}
+}
+
+func subscriberCount(store *PublicationStore) int {
+	store.subscribers.mu.Lock()
+	defer store.subscribers.mu.Unlock()
+	return len(store.subscribers.all)
 }
 
 // subscribeHeard subscribes to store and reports each change with the

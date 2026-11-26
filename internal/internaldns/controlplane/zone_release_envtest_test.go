@@ -46,7 +46,9 @@ func TestPerZoneControllerReleasesADeletedZoneOnItsVerdict(t *testing.T) {
 			if err := e.store.Status().Update(t.Context(), tombstone); err != nil {
 				t.Fatal(err)
 			}
-			if !eventually(releaseWithin, func() bool { return apierrors.IsNotFound(e.api.Get(t.Context(), client.ObjectKeyFromObject(zone), zone)) }) {
+			if !eventually(releaseWithin, func() bool {
+				return apierrors.IsNotFound(e.api.Get(t.Context(), client.ObjectKeyFromObject(zone), zone))
+			}) {
 				t.Fatalf("a replica verified the deleted zone's withdrawal, and %v later the zone still holds its finalizer", releaseWithin)
 			}
 		})
@@ -121,7 +123,9 @@ func (e zoneControllerEnv) publishZone(t *testing.T) *dnsv1alpha1.DNSZone {
 	} {
 		requireAccessTestSuccess(t, e.api.Create(ctx, obj))
 	}
-	e.waitForManifest(t, zone, func(m *dnsv1alpha1.DNSPublicationManifest) bool { return !m.Spec.Tombstone && len(m.Spec.ServingTargets) > 0 })
+	e.waitForManifest(t, zone, func(m *dnsv1alpha1.DNSPublicationManifest) bool {
+		return !m.Spec.Tombstone && len(m.Spec.ServingTargets) > 0
+	})
 	return zone
 }
 

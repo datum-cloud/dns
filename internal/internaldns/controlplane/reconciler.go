@@ -247,7 +247,7 @@ func (r *Reconciler) setupPerZone(mgr ctrl.Manager, name string, project handler
 	}
 	r.zoneQueue = make(chan event.GenericEvent, 1024)
 	generation := builder.WithPredicates(predicate.GenerationChangedPredicate{})
-	return ctrl.NewControllerManagedBy(mgr).Named(name).
+	b := ctrl.NewControllerManagedBy(mgr).Named(name).
 		WithOptions(controller.Options{RateLimiter: projectRateLimiter(), MaxConcurrentReconciles: zoneWorkers}).
 		Watches(&dnsv1alpha1.DNSRecordSet{}, zoneEvents{keys: recordSetZone}, generation).
 		Watches(&dnsv1alpha1.DNSRegistration{}, zoneEvents{keys: registrationZone}, generation).
@@ -257,8 +257,16 @@ func (r *Reconciler) setupPerZone(mgr ctrl.Manager, name string, project handler
 		Watches(&dnsv1alpha1.DNSZone{}, zoneEvents{keys: zoneItself}, generation).
 		Watches(&dnsv1alpha1.DNSZoneAssociation{}, project).Watches(&dnsv1alpha1.DNSNamingPolicy{}, project).
 		Watches(&dnsv1alpha1.DNSResolverContext{}, project).Watches(&dnsv1alpha1.DNSResolverAccessBinding{}, project).
-		WatchesRawSource(source.Channel(r.zoneQueue, zoneEvents{keys: zoneItself})).
-		Complete(r)
+		WatchesRawSource(source.Channel(r.zoneQueue, zoneEvents{keys: zoneItself}))
+	if r.Options.ManifestChanges != nil {
+		if r.Options.ProjectNamespace == "" {
+			if err := mgr.GetFieldIndexer().IndexField(context.Background(), &dnsv1alpha1.DNSZone{}, zoneUIDIndex, zoneUID); err != nil {
+				return err
+			}
+		}
+		b = b.WatchesRawSource(r.verdictSource(mgr.GetCache()))
+	}
+	return b.Complete(r)
 }
 
 // A whole project shares one queue key, so its backoff delays every name in it.

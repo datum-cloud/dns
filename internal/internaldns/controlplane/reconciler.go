@@ -73,6 +73,10 @@ type ReconcilerOptions struct {
 	// Stopping, when set and true, stops the reconciler taking or renewing
 	// zone leases so the process can release them before it exits.
 	Stopping func() bool
+	// ManifestChanges, when set, wakes a deleted zone's key when its
+	// tombstone's verdict changes. Without it, a deleted zone waits for the
+	// project pass's resync.
+	ManifestChanges ManifestChanges
 }
 
 type ServingRegion struct {

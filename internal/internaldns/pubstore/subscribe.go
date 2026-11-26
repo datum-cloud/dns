@@ -47,7 +47,6 @@ type manifestChange struct {
 	previous, current *dnsv1.DNSPublicationManifest
 }
 
-// subscribers is shared by every view of a store.
 type subscribers struct {
 	mu  sync.Mutex
 	all map[*subscriber]bool

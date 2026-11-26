@@ -412,7 +412,6 @@ func kindForKey(key string) *storedKind {
 	return nil
 }
 
-// apply records a bucket value in the index.
 func (s *PublicationStore) apply(bucket, key string, revision uint64, value []byte) {
 	kind := kindForKey(key)
 	if kind == nil || !kind.indexed {

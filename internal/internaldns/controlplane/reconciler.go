@@ -73,9 +73,8 @@ type ReconcilerOptions struct {
 	// Stopping, when set and true, stops the reconciler taking or renewing
 	// zone leases so the process can release them before it exits.
 	Stopping func() bool
-	// ManifestChanges, when set, wakes a deleted zone's key when its
-	// tombstone's verdict changes. Without it, a deleted zone waits for the
-	// project pass's resync.
+	// ManifestChanges wakes a deleted zone's key when its tombstone's verdict
+	// changes. Per-zone reconcile requires it.
 	ManifestChanges ManifestChanges
 }
 
@@ -240,14 +239,22 @@ const zoneWorkers = 4
 // setupPerZone watches record inputs per zone. The project pass keeps every
 // project-wide input and hands zones to the zone keys through zoneQueue.
 func (r *Reconciler) setupPerZone(mgr ctrl.Manager, name string, project handler.EventHandler) error {
+	if r.Options.ManifestChanges == nil {
+		return errors.New("per-zone reconcile needs ManifestChanges, or a deleted zone waits for the project pass's resync")
+	}
 	if r.Options.CachedZoneInputs {
 		if err := r.setupInputIndexes(mgr); err != nil {
 			return err
 		}
 	}
+	if r.Options.ProjectNamespace == "" {
+		if err := mgr.GetFieldIndexer().IndexField(context.Background(), &dnsv1alpha1.DNSZone{}, zoneUIDIndex, zoneUID); err != nil {
+			return err
+		}
+	}
 	r.zoneQueue = make(chan event.GenericEvent, 1024)
 	generation := builder.WithPredicates(predicate.GenerationChangedPredicate{})
-	b := ctrl.NewControllerManagedBy(mgr).Named(name).
+	return ctrl.NewControllerManagedBy(mgr).Named(name).
 		WithOptions(controller.Options{RateLimiter: projectRateLimiter(), MaxConcurrentReconciles: zoneWorkers}).
 		Watches(&dnsv1alpha1.DNSRecordSet{}, zoneEvents{keys: recordSetZone}, generation).
 		Watches(&dnsv1alpha1.DNSRegistration{}, zoneEvents{keys: registrationZone}, generation).
@@ -257,16 +264,9 @@ func (r *Reconciler) setupPerZone(mgr ctrl.Manager, name string, project handler
 		Watches(&dnsv1alpha1.DNSZone{}, zoneEvents{keys: zoneItself}, generation).
 		Watches(&dnsv1alpha1.DNSZoneAssociation{}, project).Watches(&dnsv1alpha1.DNSNamingPolicy{}, project).
 		Watches(&dnsv1alpha1.DNSResolverContext{}, project).Watches(&dnsv1alpha1.DNSResolverAccessBinding{}, project).
-		WatchesRawSource(source.Channel(r.zoneQueue, zoneEvents{keys: zoneItself}))
-	if r.Options.ManifestChanges != nil {
-		if r.Options.ProjectNamespace == "" {
-			if err := mgr.GetFieldIndexer().IndexField(context.Background(), &dnsv1alpha1.DNSZone{}, zoneUIDIndex, zoneUID); err != nil {
-				return err
-			}
-		}
-		b = b.WatchesRawSource(r.verdictSource(mgr.GetCache()))
-	}
-	return b.Complete(r)
+		WatchesRawSource(source.Channel(r.zoneQueue, zoneEvents{keys: zoneItself})).
+		WatchesRawSource(r.verdictSource(mgr.GetCache())).
+		Complete(r)
 }
 
 // A whole project shares one queue key, so its backoff delays every name in it.

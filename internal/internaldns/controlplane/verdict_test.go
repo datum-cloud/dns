@@ -13,9 +13,12 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/util/workqueue"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
@@ -197,4 +200,20 @@ func TestPerZoneVerdictSourceQueuesOnlyItsProjectsTombstoneVerdicts(t *testing.T
 	h.writeStatus(tombstone, func(s *dnsv1alpha1.DNSPublicationManifestStatus) { s.ExportAttempts++ })
 	h.writeStatus(tombstone, verified)
 	h.expectQueued(queue, key)
+}
+
+func TestPerZoneSetupRefusesAReconcilerWithNoManifestChanges(t *testing.T) {
+	s := runtime.NewScheme()
+	if err := addReferenceStateToScheme(s); err != nil {
+		t.Fatal(err)
+	}
+	// Setup only registers watches, so it never calls this API.
+	mgr, err := ctrl.NewManager(&rest.Config{Host: "https://platform.invalid"}, ctrl.Options{Scheme: s, Metrics: metricsserver.Options{BindAddress: "0"}, HealthProbeBindAddress: "0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := &Reconciler{Options: ReconcilerOptions{ProjectUID: "project-a", ProjectNamespace: "project", PerZoneReconcile: true}}
+	if err := r.SetupWithManager(mgr); err == nil {
+		t.Fatal("per-zone setup accepted a reconciler with no ManifestChanges, whose deleted zones would wait for the resync")
+	}
 }

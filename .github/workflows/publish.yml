@@ -76,7 +76,7 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: fluxcd/flux2/action@v2.10.0
+      - uses: fluxcd/flux2/action@v2.10.1
       - name: Publish the runtime and serving image pair
         env:
           RUNTIME_TAG: ${{ needs.publish-internal-dns-images.outputs.tag }}

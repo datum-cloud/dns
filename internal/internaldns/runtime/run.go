@@ -153,14 +153,7 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 		return fmt.Errorf("create uncached platform client: %w", err)
 	}
 	platformClient = &deadlineClient{Client: platformClient, Timeout: cfg.PlatformKubeAPI.requestTimeout()}
-	storeName := publicationStoreKubernetes
-	if cfg.PublicationStore != nil {
-		storeName = publicationStoreJetStream
-	}
-	if len(cfg.Regions) > 0 {
-		storeName = publicationStoreRegional
-	}
-	if err := claimPublicationStore(ctx, platformClient, cfg.PlatformNamespace, storeName, cfg.SwitchPublicationStore); err != nil {
+	if err := claimPublicationStore(ctx, platformClient, cfg.PlatformNamespace, cfg.publicationStoreName(), cfg.SwitchPublicationStore); err != nil {
 		return err
 	}
 	var publicationStore *pubstore.PublicationStore
@@ -171,6 +164,10 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 		}
 		defer closeStore()
 		publicationStore, platformClient = store, store
+	}
+	manifestChanges, platformCache, err := watchManifests(ctx, cfg, publicationStore, platformREST, scheme)
+	if err != nil {
+		return err
 	}
 	regionalPrefixes, err := cfg.regionalPrefixes()
 	if err != nil {
@@ -254,6 +251,7 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 				PerZoneReconcile:      cfg.PerZoneReconcile,
 				CachedZoneInputs:      cfg.CachedZoneInputs,
 				ZoneSlots:             zoneSlots,
+				ManifestChanges:       manifestChanges,
 			}}
 			if err := reconciler.SetupWithManager(mgr); err != nil {
 				return fmt.Errorf("setup reconciler: %w", err)
@@ -361,6 +359,9 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 	}
 	if publicationStore != nil {
 		go retryLoop(ctx, pubstore.CollectInterval, loopID{Loop: "publication store collect"}, live, publicationStore.Collect, errCh)
+	}
+	if platformCache != nil {
+		go func() { errCh <- platformCache.Start(ctx) }()
 	}
 	startProjectSources(ctx, projects)
 	if discovery == nil {

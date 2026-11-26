@@ -22,8 +22,8 @@ require (
 	k8s.io/api v0.37.2
 	k8s.io/apimachinery v0.37.2
 	k8s.io/client-go v0.37.2
-	sigs.k8s.io/controller-runtime v0.25.2
-	sigs.k8s.io/multicluster-runtime v0.25.3-0.20261116153018-6d88a2667465
+	sigs.k8s.io/controller-runtime v0.25.3
+	sigs.k8s.io/multicluster-runtime v0.25.3-0.20261126143048-578adb951462
 )
 
 require (
@@ -143,7 +143,7 @@ require (
 	github.com/google/cel-go v0.30.0
 	github.com/google/gnostic-models v0.7.1 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
-	github.com/google/pprof v0.0.0-20261102214848-0031fcd306b0
+	github.com/google/pprof v0.0.0-20261118010117-084b33a85f63
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.30.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect

@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"net/http"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -56,9 +57,11 @@ func TestConfiguredMetricsAddressOverridesFlag(t *testing.T) {
 func TestAgentProbeServerFailsWhenReconcileStalls(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	now := time.Unix(1000, 0)
+	var now atomic.Int64
+	now.Store(time.Unix(1000, 0).UnixNano())
+	advance := func(d time.Duration) { now.Add(int64(d)) }
 	live := newLoopLiveness()
-	live.now = func() time.Time { return now }
+	live.now = func() time.Time { return time.Unix(0, now.Load()) }
 	reconcile := loopID{Loop: "serving reconcile"}
 	live.start(reconcile, time.Second)
 	server, err := newProbeServer("127.0.0.1:0", map[string]healthz.Checker{"loops": live.check}, nil)
@@ -77,13 +80,13 @@ func TestAgentProbeServerFailsWhenReconcileStalls(t *testing.T) {
 		return resp.StatusCode
 	}
 	for range 3 {
-		now = now.Add(minLoopStall / 2)
+		advance(minLoopStall / 2)
 		live.tick(reconcile)
 		if got := status("/healthz"); got != http.StatusOK {
 			t.Fatalf("/healthz while reconcile progresses = %d", got)
 		}
 	}
-	now = now.Add(minLoopStall + time.Second)
+	advance(minLoopStall + time.Second)
 	if got := status("/healthz"); got != http.StatusInternalServerError {
 		t.Fatalf("/healthz after reconcile stalled = %d", got)
 	}

@@ -511,9 +511,12 @@ An agent serves `/healthz` on `--agent-health-probe-bind-address`, off by
 default. It fails when the agent's reconcile loop has not completed a run in
 three times `reconcileInterval`, or ten minutes, whichever is longer. Like the
 control plane's, it checks that the loop runs, not that it succeeds, so it
-stays healthy while the broker is unreachable. The agent serves no `/readyz`;
-readiness stays with `--role=readiness`. Configure it as the agent
-container's liveness probe:
+stays healthy while the broker is unreachable. It shows only that the
+reconcile loop completes runs. It does not cover the DNS serving path or the
+event consumer. A startup restore or bootstrap attempt that runs longer than
+the threshold, ten minutes by default, fails the probe and restarts the agent.
+The agent serves no `/readyz`; readiness stays with `--role=readiness`.
+Configure `/healthz` as the agent container's liveness probe:
 
 ```yaml
 args:

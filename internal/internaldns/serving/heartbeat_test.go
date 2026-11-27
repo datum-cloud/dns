@@ -52,7 +52,7 @@ func TestStartHeartbeatsOnlyWhileReconcileProgresses(t *testing.T) {
 	waitForBeats(3)
 
 	agent.mu.Lock()
-	time.Sleep(50 * time.Millisecond)
+	time.Sleep(100 * time.Millisecond)
 	stalled := beats.Load()
 	time.Sleep(200 * time.Millisecond)
 	if got := beats.Load(); got != stalled {

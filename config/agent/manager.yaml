@@ -132,7 +132,7 @@ spec:
         - name: pdns-shared
           mountPath: /run/pdns
       - name: pdns
-        image: powerdns/pdns-auth-51:5.1.5
+        image: powerdns/pdns-auth-51:5.1.7
         imagePullPolicy: IfNotPresent
         ports:
           - containerPort: 53

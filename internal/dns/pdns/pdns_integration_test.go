@@ -93,7 +93,7 @@ func startPDNS(t *testing.T, apiKey string) (baseURL string, terminate func()) {
 func startPDNSLMDB(t *testing.T) (baseURL, apiKey string, terminate func()) {
 	t.Helper()
 	apiKey = "itest-key"
-	baseURL, terminate = startPDNSWith(t, "powerdns/pdns-auth-51:5.1.5", apiKey, writePDNSAuthWithLMDB)
+	baseURL, terminate = startPDNSWith(t, "powerdns/pdns-auth-51:5.1.7", apiKey, writePDNSAuthWithLMDB)
 	return baseURL, apiKey, terminate
 }
 

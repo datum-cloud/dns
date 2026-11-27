@@ -507,6 +507,33 @@ its interval, or ten minutes, whichever is longer. It checks that loops are
 running, not that they succeed. `/readyz` waits for the first project
 discovery pass and, when admission is enabled, for the webhook server.
 
+An agent serves `/healthz` on `--agent-health-probe-bind-address`, off by
+default. It fails when the agent's reconcile loop has not completed a run in
+three times `reconcileInterval`, or ten minutes, whichever is longer. Like the
+control plane's, it checks that the loop runs, not that it succeeds, so it
+stays healthy while the broker is unreachable. It shows only that the
+reconcile loop completes runs. It does not cover the DNS serving path or the
+event consumer. A startup restore or bootstrap attempt that runs longer than
+the threshold, ten minutes by default, fails the probe and restarts the agent.
+The agent serves no `/readyz`; readiness stays with `--role=readiness`.
+Configure `/healthz` as the agent container's liveness probe:
+
+```yaml
+args:
+  - --role=agent
+  - --agent-health-probe-bind-address=:8082
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: 8082
+  periodSeconds: 30
+  timeoutSeconds: 5
+  failureThreshold: 3
+```
+
+Pick a port no other container in the pod uses; agents that share a host
+network namespace each need their own.
+
 The metrics endpoint includes controller-runtime reconciliation metrics and:
 
 - `internal_dns_loop_runs_total{loop,region,shard,result}`: completed loop

@@ -45,10 +45,11 @@ import (
 const parentNameExtra = "iam.miloapis.com/parent-name"
 
 type Options struct {
-	Kubeconfig              string
-	MetricsBindAddress      string
-	AgentMetricsBindAddress string
-	HealthProbeBindAddress  string
+	Kubeconfig                  string
+	MetricsBindAddress          string
+	AgentMetricsBindAddress     string
+	AgentHealthProbeBindAddress string
+	HealthProbeBindAddress      string
 }
 
 // Run starts one of the deliberately separate production roles. Agent and
@@ -659,12 +660,25 @@ func waitForRetry(ctx context.Context) bool {
 func runAgent(ctx context.Context, cfg Config, opts Options) error {
 	log := ctrl.LoggerFrom(ctx).WithName("internal-dns-agent")
 	publisher := &agentPublisher{}
-	agent, err := serving.NewAgent(cfg.Agent, serving.Dependencies{AckPublisher: publisher, OnError: func(err error) { log.Error(err, "serving agent operation failed; retrying") }})
+	live := newLoopLiveness()
+	reconcile := loopID{Loop: "serving reconcile"}
+	agent, err := serving.NewAgent(cfg.Agent, serving.Dependencies{AckPublisher: publisher, OnError: func(err error) { log.Error(err, "serving agent operation failed; retrying") }, Heartbeat: func() { live.tick(reconcile) }})
 	if err != nil {
 		return err
 	}
+	live.start(reconcile, agent.ReconcileInterval())
 	workerCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	var healthDone <-chan error
+	if address := opts.AgentHealthProbeBindAddress; address != "" && address != "0" {
+		server, err := newProbeServer(address, map[string]healthz.Checker{"loops": live.check}, nil)
+		if err != nil {
+			return err
+		}
+		result := make(chan error, 1)
+		healthDone = result
+		go func() { result <- server.Start(workerCtx) }()
+	}
 	done := make(chan error, 1)
 	go func() { done <- agent.Start(workerCtx) }()
 	var metricsDone <-chan error
@@ -697,6 +711,8 @@ func runAgent(ctx context.Context, cfg Config, opts Options) error {
 	case err := <-done:
 		return err
 	case err := <-metricsDone:
+		return err
+	case err := <-healthDone:
 		return err
 	}
 }

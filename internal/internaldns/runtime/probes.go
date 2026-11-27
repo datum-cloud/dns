@@ -42,6 +42,9 @@ func newProbeServer(address string, live, ready map[string]healthz.Checker) (*pr
 	}
 	mux := http.NewServeMux()
 	for path, checks := range map[string]map[string]healthz.Checker{"/healthz": live, "/readyz": ready} {
+		if checks == nil {
+			continue
+		}
 		handler := http.StripPrefix(path, &healthz.Handler{Checks: checks})
 		mux.Handle(path, handler)
 		mux.Handle(path+"/", handler)

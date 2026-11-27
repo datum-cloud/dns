@@ -156,6 +156,7 @@ type Dependencies struct {
 	Clock               func() time.Time
 	PublicationVerifier PublicationVerifier
 	OnError             func(error)
+	Heartbeat           func()
 }
 
 type ackPublishResult struct {
@@ -270,6 +271,9 @@ func NewAgent(c Config, d Dependencies) (*Agent, error) {
 	if d.Runner == nil {
 		d.Runner = ExecRunner{}
 	}
+	if d.Heartbeat == nil {
+		d.Heartbeat = func() {}
+	}
 	d.Runner = newSerialRunner(d.Runner)
 	d.AckPublisher = newBoundedAckPublisher(d.AckPublisher)
 	if (c.Mode == ModeResolver || c.Mode == ModeCombined) && c.Render.Role != RenderRegionalCoreDNS && d.Verifier == nil && !c.UnsafeAllowNoDNSVerify {
@@ -324,6 +328,7 @@ func (a *Agent) Start(ctx context.Context) error {
 	a.mu.Unlock()
 	for {
 		err := a.bootstrapAndStep(ctx)
+		a.deps.Heartbeat()
 		if err == nil {
 			break
 		}
@@ -351,11 +356,7 @@ func (a *Agent) Start(ctx context.Context) error {
 	if a.cfg.Mode == ModeResolver || a.cfg.Mode == ModeCombined {
 		start(a.deps.AckSource)
 	}
-	interval := a.cfg.ReconcileInterval
-	if interval <= 0 {
-		interval = time.Second
-	}
-	ticker := time.NewTicker(interval)
+	ticker := time.NewTicker(a.ReconcileInterval())
 	defer ticker.Stop()
 	for {
 		select {
@@ -369,8 +370,16 @@ func (a *Agent) Start(ctx context.Context) error {
 			if err := a.Step(ctx); err != nil {
 				a.report(err)
 			}
+			a.deps.Heartbeat()
 		}
 	}
+}
+
+func (a *Agent) ReconcileInterval() time.Duration {
+	if a.cfg.ReconcileInterval <= 0 {
+		return time.Second
+	}
+	return a.cfg.ReconcileInterval
 }
 
 func (a *Agent) failClosed(ctx context.Context) error {

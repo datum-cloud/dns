@@ -22,7 +22,7 @@ COPY --from=build /out/dns-mcp /dns-mcp
 USER 65532:65532
 ENTRYPOINT ["/manager"]
 
-FROM powerdns/dnsdist-20:2.0.11@sha256:3d6acb148dccf2f11c43ded2cd8b231f4a3a24cd05f2c6d586179faec6b414ae AS private
+FROM powerdns/dnsdist-20:2.0.12@sha256:f77615179b015637b8736d550343c99235c01539ac60dcfa4a6e02f4ffc46d05 AS private
 USER 0:0
 RUN apt-get update && apt-get install --no-install-recommends -y \
     pdns-recursor iproute2 iptables procps netcat-openbsd ca-certificates && \
